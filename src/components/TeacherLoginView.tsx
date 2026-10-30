@@ -13,7 +13,8 @@ interface TeacherLoginViewProps {
   onLoginSuccess: (
     token: string,
     teacher: TeacherProfile,
-    initialState: ServerStateSnapshot
+    initialState: ServerStateSnapshot,
+    rememberMe?: boolean
   ) => void;
   onSwitchToStudentPortal: () => void;
 }
@@ -25,6 +26,7 @@ export const TeacherLoginView: React.FC<TeacherLoginViewProps> = ({
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -45,7 +47,7 @@ export const TeacherLoginView: React.FC<TeacherLoginViewProps> = ({
       if (!res.ok) {
         setError(data.error || 'نام کاربری یا رمز عبور اشتباه است.');
       } else {
-        onLoginSuccess(data.token, data.teacher, data.state);
+        onLoginSuccess(data.token, data.teacher, data.state, rememberMe);
       }
     } catch {
       setError('خطا در ارتباط با سرور احراز هویت استاد.');
@@ -91,7 +93,7 @@ export const TeacherLoginView: React.FC<TeacherLoginViewProps> = ({
                 id="teacher-username"
                 type="text"
                 dir="ltr"
-                autoComplete="off"
+                autoComplete="username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="Username"
@@ -136,6 +138,18 @@ export const TeacherLoginView: React.FC<TeacherLoginViewProps> = ({
               </button>
             </div>
           </div>
+
+          <label className="flex items-center gap-2.5 py-1 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+              className="w-4 h-4 accent-[#f54e00] rounded cursor-pointer"
+            />
+            <span className="text-[13px] font-medium text-[#26251e]">
+              مرا به خاطر بسپار (حفظ ورود پس از رفرش صفحه)
+            </span>
+          </label>
 
           <button
             type="submit"

@@ -31,23 +31,83 @@ import type {
   IntervalType,
   AttendanceStatus,
   PaymentSystemType,
+  PostpaidCycleType,
 } from './types';
+
+const AUTH_STORAGE_KEY = 'maktabyar_saved_auth_v1';
+
+interface SavedAuthPayload {
+  portalMode: 'teacher' | 'student';
+  role: 'teacher' | 'student';
+  token: string;
+  teacher?: TeacherProfile | null;
+  student?: Student | null;
+}
+
+function loadSavedAuth(): SavedAuthPayload | null {
+  try {
+    const rawLocal = window.localStorage.getItem(AUTH_STORAGE_KEY);
+    if (rawLocal) return JSON.parse(rawLocal) as SavedAuthPayload;
+    const rawSession = window.sessionStorage.getItem(AUTH_STORAGE_KEY);
+    if (rawSession) return JSON.parse(rawSession) as SavedAuthPayload;
+  } catch {
+    // ignore storage errors
+  }
+  return null;
+}
+
+function saveAuthToStorage(payload: SavedAuthPayload, rememberMe = true) {
+  try {
+    const serialized = JSON.stringify(payload);
+    if (rememberMe) {
+      window.localStorage.setItem(AUTH_STORAGE_KEY, serialized);
+      window.sessionStorage.removeItem(AUTH_STORAGE_KEY);
+    } else {
+      window.sessionStorage.setItem(AUTH_STORAGE_KEY, serialized);
+      window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function clearSavedAuthFromStorage() {
+  try {
+    window.localStorage.removeItem(AUTH_STORAGE_KEY);
+    window.sessionStorage.removeItem(AUTH_STORAGE_KEY);
+  } catch {
+    // ignore storage errors
+  }
+}
 
 export default function App() {
   const today = getCurrentJalaliDate();
+  const initialAuth = loadSavedAuth();
 
   // Portal Mode: 'student' or 'teacher'
-  const [portalMode, setPortalMode] = useState<'teacher' | 'student'>('student');
+  const [portalMode, setPortalMode] = useState<'teacher' | 'student'>(
+    initialAuth?.portalMode || 'student'
+  );
   const [teacherTab, setTeacherTab] = useState<TeacherTab>('dashboard');
 
-  // Strict Role Authentication Tokens & Profiles
-  const [teacherToken, setTeacherToken] = useState<string | null>(null);
+  // Strict Role Authentication Tokens & Profiles (initialized from saved storage so page refresh keeps user logged in)
+  const [teacherToken, setTeacherToken] = useState<string | null>(
+    initialAuth?.role === 'teacher' ? initialAuth.token : null
+  );
   const [loggedInTeacher, setLoggedInTeacher] = useState<TeacherProfile | null>(
-    null
+    initialAuth?.role === 'teacher' && initialAuth.teacher
+      ? initialAuth.teacher
+      : null
   );
 
-  const [studentToken, setStudentToken] = useState<string | null>(null);
-  const [loggedInStudent, setLoggedInStudent] = useState<Student | null>(null);
+  const [studentToken, setStudentToken] = useState<string | null>(
+    initialAuth?.role === 'student' ? initialAuth.token : null
+  );
+  const [loggedInStudent, setLoggedInStudent] = useState<Student | null>(
+    initialAuth?.role === 'student' && initialAuth.student
+      ? initialAuth.student
+      : null
+  );
 
   // Firebase Auth state for Teacher cloud backup
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
@@ -90,6 +150,52 @@ export default function App() {
     setMessages(snap.messages || []);
     setNotifications(snap.notifications || []);
   }, []);
+
+  // Validate saved session token on mount / refresh and load latest server/static state
+  useEffect(() => {
+    const saved = loadSavedAuth();
+    if (!saved || !saved.token) return;
+    let cancelled = false;
+    fetch('/api/auth/session', {
+      headers: {
+        Authorization: `Bearer ${saved.token}`,
+      },
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          if (res.status === 401 || res.status === 404) {
+            clearSavedAuthFromStorage();
+            if (!cancelled) {
+              setTeacherToken(null);
+              setLoggedInTeacher(null);
+              setStudentToken(null);
+              setLoggedInStudent(null);
+              clearScopedData();
+            }
+          }
+          return;
+        }
+        const data = await res.json();
+        if (cancelled) return;
+        if (data.role === 'teacher' && data.teacher && data.state) {
+          setPortalMode('teacher');
+          setTeacherToken(saved.token);
+          setLoggedInTeacher(data.teacher);
+          applySnapshot(data.state);
+        } else if (data.role === 'student' && data.student && data.isolatedState) {
+          setPortalMode('student');
+          setStudentToken(saved.token);
+          setLoggedInStudent(data.student);
+          applySnapshot(data.isolatedState);
+        }
+      })
+      .catch(() => {
+        // Keep local auth if offline temporarily
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applySnapshot, clearScopedData]);
 
   // Active token based on current portal mode
   const activeToken =
@@ -260,13 +366,23 @@ export default function App() {
   const handleTeacherLoginSuccess = (
     token: string,
     teacher: TeacherProfile,
-    initialState: ServerStateSnapshot
+    initialState: ServerStateSnapshot,
+    rememberMe = true
   ) => {
     setStudentToken(null);
     setLoggedInStudent(null);
     setTeacherToken(token);
     setLoggedInTeacher(teacher);
     applySnapshot(initialState);
+    saveAuthToStorage(
+      {
+        portalMode: 'teacher',
+        role: 'teacher',
+        token,
+        teacher,
+      },
+      rememberMe
+    );
   };
 
   const handleTeacherLogout = async () => {
@@ -276,6 +392,7 @@ export default function App() {
         headers: { Authorization: `Bearer ${teacherToken}` },
       }).catch(() => {});
     }
+    clearSavedAuthFromStorage();
     setTeacherToken(null);
     setLoggedInTeacher(null);
     clearScopedData();
@@ -284,13 +401,23 @@ export default function App() {
   const handleStudentLoginSuccess = (
     token: string,
     student: Student,
-    isolatedState: ServerStateSnapshot
+    isolatedState: ServerStateSnapshot,
+    rememberMe = true
   ) => {
     setTeacherToken(null);
     setLoggedInTeacher(null);
     setStudentToken(token);
     setLoggedInStudent(student);
     applySnapshot(isolatedState);
+    saveAuthToStorage(
+      {
+        portalMode: 'student',
+        role: 'student',
+        token,
+        student,
+      },
+      rememberMe
+    );
   };
 
   const handleStudentLogout = async () => {
@@ -300,6 +427,7 @@ export default function App() {
         headers: { Authorization: `Bearer ${studentToken}` },
       }).catch(() => {});
     }
+    clearSavedAuthFromStorage();
     setStudentToken(null);
     setLoggedInStudent(null);
     clearScopedData();
@@ -339,6 +467,7 @@ export default function App() {
     tuitionPerSession: number;
     sessionsLeft: number;
     paymentType?: PaymentSystemType;
+    postpaidCycleType?: PostpaidCycleType;
     postpaidCycleSessions?: number;
   }) => {
     if (!teacherToken) throw new Error('عدم دسترسی استاد.');
@@ -415,6 +544,7 @@ export default function App() {
       totalSessionsPaid?: number;
       totalAttended?: number;
       paymentType?: PaymentSystemType;
+      postpaidCycleType?: PostpaidCycleType;
       postpaidCycleSessions?: number;
     }
   ) => {

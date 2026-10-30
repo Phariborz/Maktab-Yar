@@ -2,6 +2,12 @@ export type IntervalType = 'weekly' | 'twice_weekly' | 'biweekly' | 'custom_days
 
 export type PaymentSystemType = 'prepaid' | 'postpaid';
 
+export type PostpaidCycleType =
+  | 'per_session'
+  | 'weekly'
+  | 'biweekly'
+  | 'monthly';
+
 export type AttendanceStatus =
   | 'scheduled'
   | 'present'
@@ -30,7 +36,8 @@ export interface Student {
   selectedDays: number[]; // 0..6 (0 = شنبه ... 6 = جمعه) selectable in any combination
   dayTimes?: Record<string, string>; // Per-weekday HH:MM map, e.g. { "2": "16:00", "6": "10:00" }
   paymentType?: PaymentSystemType; // 'prepaid' (پیش‌پرداخت) | 'postpaid' (پس‌پرداخت)
-  postpaidCycleSessions?: number; // Target sessions per settlement cycle for postpaid students
+  postpaidCycleType?: PostpaidCycleType; // 'per_session' | 'weekly' | 'biweekly' | 'monthly'
+  postpaidCycleSessions?: number; // Calculated sessions per settlement cycle from selectedDays
   intervalType: IntervalType;
   intervalLabel: string;
   tuitionPerSession: number;

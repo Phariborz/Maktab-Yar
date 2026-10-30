@@ -10,6 +10,8 @@ import {
   getTimeForJalaliDate,
   formatWeekdaysLabel,
   generateSessionDatesByWeekdays,
+  sanitizePostpaidCycleType,
+  calculatePostpaidCycleSessions,
 } from './jalali';
 import type {
   Student,
@@ -20,6 +22,7 @@ import type {
   ServerStateSnapshot,
   IntervalType,
   PaymentSystemType,
+  PostpaidCycleType,
 } from '../types';
 
 const STORAGE_KEY = 'maktabyar_static_state_v2';
@@ -275,7 +278,42 @@ const staticTokenMap = new Map<
   string,
   { role: 'teacher' | 'student'; teacherId?: string; studentId?: string }
 >();
+const staticRevokedTokens = new Set<string>();
 const staticOtpMap = new Map<string, { code: string; studentId: string }>();
+
+function resolveStaticAuthSession(
+  token: string,
+  state: ServerStateSnapshot
+): { role: 'teacher' | 'student'; teacherId?: string; studentId?: string } | undefined {
+  if (!token || staticRevokedTokens.has(token)) return undefined;
+  const cached = staticTokenMap.get(token);
+  if (cached) return cached;
+
+  if (token.startsWith('static_tchr__')) {
+    const parts = token.split('__');
+    const teacherId = parts[1];
+    const matched = STATIC_TEACHERS.find((t) => t.id === teacherId);
+    if (matched) {
+      const sess = { role: 'teacher' as const, teacherId: matched.id };
+      staticTokenMap.set(token, sess);
+      return sess;
+    }
+  } else if (token.startsWith('static_stu__')) {
+    const parts = token.split('__');
+    const studentId = parts[1];
+    const student = state.students.find((s) => s.id === studentId);
+    if (student) {
+      const sess = {
+        role: 'student' as const,
+        studentId: student.id,
+        teacherId: student.teacherId,
+      };
+      staticTokenMap.set(token, sess);
+      return sess;
+    }
+  }
+  return undefined;
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -294,7 +332,7 @@ async function handleStaticApiRequest(
   const token = authHeader.startsWith('Bearer ')
     ? authHeader.slice(7).trim()
     : '';
-  const authSess = staticTokenMap.get(token);
+  const authSess = resolveStaticAuthSession(token, state);
 
   // 1. Teacher Login
   if (path === '/api/auth/teacher-login' && method === 'POST') {
@@ -316,7 +354,7 @@ async function handleStaticApiRequest(
       );
     }
 
-    const newToken = `static_tchr_${Date.now()}`;
+    const newToken = `static_tchr__${matched.id}__${Date.now()}`;
     staticTokenMap.set(newToken, { role: 'teacher', teacherId: matched.id });
     return jsonResponse({
       ok: true,
@@ -352,7 +390,7 @@ async function handleStaticApiRequest(
       return jsonResponse({ error: 'رمز عبور وارد شده نادرست است.' }, 401);
     }
 
-    const newToken = `static_stu_${Date.now()}`;
+    const newToken = `static_stu__${student.id}__${Date.now()}`;
     staticTokenMap.set(newToken, {
       role: 'student',
       studentId: student.id,
@@ -393,7 +431,7 @@ async function handleStaticApiRequest(
     if (!student) {
       return jsonResponse({ error: 'دانش‌آموز یافت نشد.' }, 404);
     }
-    const newToken = `static_stu_${Date.now()}`;
+    const newToken = `static_stu__${student.id}__${Date.now()}`;
     staticTokenMap.set(newToken, {
       role: 'student',
       studentId: student.id,
@@ -407,8 +445,44 @@ async function handleStaticApiRequest(
     });
   }
 
+  if (path === '/api/auth/session' && method === 'GET') {
+    if (!authSess) {
+      return jsonResponse({ error: 'نشست کاربری معتبر نیست.' }, 401);
+    }
+    if (authSess.role === 'teacher' && authSess.teacherId) {
+      const matched =
+        STATIC_TEACHERS.find((t) => t.id === authSess.teacherId) ||
+        STATIC_TEACHERS[0];
+      return jsonResponse({
+        ok: true,
+        role: 'teacher',
+        teacher: {
+          id: matched.id,
+          name: matched.name,
+          username: matched.username,
+          phone: matched.phoneDisplay,
+        },
+        state: filterTeacherSnapshot(state, matched.id),
+      });
+    }
+    if (authSess.role === 'student' && authSess.studentId) {
+      const student = state.students.find((s) => s.id === authSess.studentId);
+      if (!student) {
+        return jsonResponse({ error: 'دانش‌آموز یافت نشد.' }, 404);
+      }
+      return jsonResponse({
+        ok: true,
+        role: 'student',
+        student,
+        isolatedState: filterStudentSnapshot(state, student.id),
+      });
+    }
+    return jsonResponse({ error: 'نشست نامعتبر.' }, 401);
+  }
+
   if (path === '/api/auth/logout' && method === 'POST') {
     staticTokenMap.delete(token);
+    if (token) staticRevokedTokens.add(token);
     return jsonResponse({ ok: true });
   }
 
@@ -430,12 +504,32 @@ async function handleStaticApiRequest(
       cleanTime
     );
     const primaryTime = cleanDayTimes[String(cleanDays[0])] || cleanTime;
+    const cleanStart = toEnglishDigits(
+      String(bodyObj.startDate || today.formatted)
+    );
     const paymentType: PaymentSystemType =
       bodyObj.paymentType === 'postpaid' ? 'postpaid' : 'prepaid';
-    const postpaidCycleSessions = Math.max(
-      1,
-      Math.min(50, Number(bodyObj.postpaidCycleSessions) || 4)
+    const postpaidCycleType: PostpaidCycleType = sanitizePostpaidCycleType(
+      bodyObj.postpaidCycleType
     );
+    const postpaidCycleSessions = bodyObj.postpaidCycleType
+      ? calculatePostpaidCycleSessions(
+          postpaidCycleType,
+          cleanDays,
+          cleanStart
+        )
+      : Math.max(
+          1,
+          Math.min(
+            50,
+            Number(bodyObj.postpaidCycleSessions) ||
+              calculatePostpaidCycleSessions(
+                postpaidCycleType,
+                cleanDays,
+                cleanStart
+              )
+          )
+        );
     const initialSessionsLeft =
       bodyObj.sessionsLeft !== undefined && !isNaN(Number(bodyObj.sessionsLeft))
         ? Number(bodyObj.sessionsLeft)
@@ -449,11 +543,12 @@ async function handleStaticApiRequest(
       phone,
       password: String(bodyObj.password || '123456').trim(),
       subject: String(bodyObj.subject || '').trim(),
-      startDate: toEnglishDigits(String(bodyObj.startDate || today.formatted)),
+      startDate: cleanStart,
       classTime: primaryTime,
       selectedDays: cleanDays,
       dayTimes: cleanDayTimes,
       paymentType,
+      postpaidCycleType,
       postpaidCycleSessions,
       intervalType: (bodyObj.intervalType as IntervalType) || 'custom_days',
       intervalLabel: formatWeekdaysLabel(cleanDays, cleanDayTimes, primaryTime),
@@ -539,7 +634,23 @@ async function handleStaticApiRequest(
     if (bodyObj.paymentType === 'prepaid' || bodyObj.paymentType === 'postpaid') {
       stu.paymentType = bodyObj.paymentType;
     }
-    if (bodyObj.postpaidCycleSessions !== undefined) {
+    if (bodyObj.postpaidCycleType !== undefined) {
+      stu.postpaidCycleType = sanitizePostpaidCycleType(bodyObj.postpaidCycleType);
+      stu.postpaidCycleSessions = calculatePostpaidCycleSessions(
+        stu.postpaidCycleType,
+        stu.selectedDays,
+        stu.startDate
+      );
+    } else if (
+      (bodyObj.selectedDays !== undefined || bodyObj.startDate !== undefined) &&
+      stu.postpaidCycleType
+    ) {
+      stu.postpaidCycleSessions = calculatePostpaidCycleSessions(
+        stu.postpaidCycleType,
+        stu.selectedDays,
+        stu.startDate
+      );
+    } else if (bodyObj.postpaidCycleSessions !== undefined) {
       stu.postpaidCycleSessions = Math.max(
         1,
         Math.min(50, Number(bodyObj.postpaidCycleSessions) || 4)

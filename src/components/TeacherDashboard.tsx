@@ -24,6 +24,8 @@ import {
 } from 'lucide-react';
 import {
   JALALI_WEEKDAYS,
+  JALALI_MONTH_NAMES,
+  POSTPAID_CYCLE_OPTIONS,
   toPersianDigits,
   formatSignedPersianNumber,
   toEnglishDigits,
@@ -37,6 +39,13 @@ import {
   sanitizeDayTimes,
   formatStudentScheduleSummary,
   getTimeForJalaliDate,
+  sanitizePostpaidCycleType,
+  calculatePostpaidCycleSessions,
+  calculatePostpaidCycleDetails,
+  formatPostpaidCycleLabel,
+  parseJalaliString,
+  formatJalaliString,
+  getJalaliMonthDays,
 } from '../utils/jalali';
 import { JalaliCalendar } from './JalaliCalendar';
 import type {
@@ -48,6 +57,7 @@ import type {
   IntervalType,
   AttendanceStatus,
   PaymentSystemType,
+  PostpaidCycleType,
 } from '../types';
 
 export type TeacherTab =
@@ -80,6 +90,7 @@ interface TeacherDashboardProps {
     tuitionPerSession: number;
     sessionsLeft: number;
     paymentType?: PaymentSystemType;
+    postpaidCycleType?: PostpaidCycleType;
     postpaidCycleSessions?: number;
   }) => Promise<void>;
   onEditStudent: (
@@ -98,6 +109,7 @@ interface TeacherDashboardProps {
       totalSessionsPaid?: number;
       totalAttended?: number;
       paymentType?: PaymentSystemType;
+      postpaidCycleType?: PostpaidCycleType;
       postpaidCycleSessions?: number;
     }
   ) => Promise<void>;
@@ -202,7 +214,14 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   });
   const [stuPaymentType, setStuPaymentType] =
     useState<PaymentSystemType>('prepaid');
-  const [stuPostpaidCycle, setStuPostpaidCycle] = useState<number>(4);
+  const [stuPostpaidCycleType, setStuPostpaidCycleType] =
+    useState<PostpaidCycleType>('monthly');
+  const stuPostpaidDetails = calculatePostpaidCycleDetails(
+    stuPostpaidCycleType,
+    stuSelectedDays,
+    stuStartDate
+  );
+  const stuPostpaidCycle = stuPostpaidDetails.sessionsCount;
   const [stuTuition, setStuTuition] = useState(600000);
   const [stuInitialSessions, setStuInitialSessions] = useState(5);
   const [studentFormMsg, setStudentFormMsg] = useState<{
@@ -225,7 +244,14 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   );
   const [editStuPaymentType, setEditStuPaymentType] =
     useState<PaymentSystemType>('prepaid');
-  const [editStuPostpaidCycle, setEditStuPostpaidCycle] = useState<number>(4);
+  const [editStuPostpaidCycleType, setEditStuPostpaidCycleType] =
+    useState<PostpaidCycleType>('monthly');
+  const editStuPostpaidDetails = calculatePostpaidCycleDetails(
+    editStuPostpaidCycleType,
+    editStuSelectedDays,
+    editStuStartDate
+  );
+  const editStuPostpaidCycle = editStuPostpaidDetails.sessionsCount;
   const [editStuTuition, setEditStuTuition] = useState(600000);
   const [editStuSessionsLeft, setEditStuSessionsLeft] = useState(0);
   const [editStuTotalPaid, setEditStuTotalPaid] = useState(0);
@@ -489,13 +515,19 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     );
     const initialSessionsValue =
       stuPaymentType === 'postpaid' ? Number(stuInitialSessions) || 0 : Number(stuInitialSessions) || 0;
+    const cleanStartStr = toEnglishDigits(stuStartDate).trim() || today.formatted;
+    const calculatedCycleSessions = calculatePostpaidCycleSessions(
+      stuPostpaidCycleType,
+      cleanDays,
+      cleanStartStr
+    );
     try {
       await onAddStudent({
         name: stuName.trim(),
         phone: toEnglishDigits(stuPhone).trim(),
         password: toEnglishDigits(stuPassword).trim() || '123456',
         subject: stuSubject.trim(),
-        startDate: toEnglishDigits(stuStartDate).trim(),
+        startDate: cleanStartStr,
         classTime: primaryTime,
         selectedDays: cleanDays,
         dayTimes: cleanDayTimes,
@@ -504,12 +536,20 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         tuitionPerSession: Number(stuTuition) || 500000,
         sessionsLeft: initialSessionsValue,
         paymentType: stuPaymentType,
-        postpaidCycleSessions: Math.max(1, Number(stuPostpaidCycle) || 4),
+        postpaidCycleType: stuPostpaidCycleType,
+        postpaidCycleSessions: calculatedCycleSessions,
       });
       setStudentFormMsg({
         type: 'success',
         text: `دانش‌آموز «${stuName}» (${
-          stuPaymentType === 'postpaid' ? 'پس‌پرداخت' : 'پیش‌پرداخت'
+          stuPaymentType === 'postpaid'
+            ? `پس‌پرداخت — ${formatPostpaidCycleLabel(
+                stuPostpaidCycleType,
+                cleanDays,
+                calculatedCycleSessions,
+                cleanStartStr
+              )}`
+            : 'پیش‌پرداخت'
         }) با برنامه کلاسی (${intervalLabel}) ثبت شد.`,
       });
       setStuName('');
@@ -546,7 +586,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     setEditStuSelectedDays(cleanDays);
     setEditStuDayTimes(cleanDayTimes);
     setEditStuPaymentType(stu.paymentType || 'prepaid');
-    setEditStuPostpaidCycle(stu.postpaidCycleSessions || 4);
+    setEditStuPostpaidCycleType(sanitizePostpaidCycleType(stu.postpaidCycleType));
     setEditStuTuition(stu.tuitionPerSession);
     setEditStuSessionsLeft(stu.sessionsLeft);
     setEditStuTotalPaid(
@@ -571,13 +611,20 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       cleanDefaultTime
     );
     const primaryTime = cleanDayTimes[String(cleanDays[0])] || cleanDefaultTime;
+    const cleanEditStartStr =
+      toEnglishDigits(editStuStartDate).trim() || today.formatted;
+    const calculatedEditCycleSessions = calculatePostpaidCycleSessions(
+      editStuPostpaidCycleType,
+      cleanDays,
+      cleanEditStartStr
+    );
     try {
       await onEditStudent(editingStudent.id, {
         name: editStuName.trim(),
         phone: toEnglishDigits(editStuPhone).trim(),
         password: editStuPassword.trim(),
         subject: editStuSubject.trim(),
-        startDate: toEnglishDigits(editStuStartDate).trim(),
+        startDate: cleanEditStartStr,
         classTime: primaryTime,
         selectedDays: cleanDays,
         dayTimes: cleanDayTimes,
@@ -586,7 +633,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         totalSessionsPaid: Number(editStuTotalPaid),
         totalAttended: Number(editStuTotalAttended),
         paymentType: editStuPaymentType,
-        postpaidCycleSessions: Math.max(1, Number(editStuPostpaidCycle) || 4),
+        postpaidCycleType: editStuPostpaidCycleType,
+        postpaidCycleSessions: calculatedEditCycleSessions,
       });
       setEditingStudent(null);
     } catch (err) {
@@ -1671,30 +1719,111 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   </div>
 
                   {editStuPaymentType === 'postpaid' && (
-                    <div className="pt-2 border-t border-[#e6e5e0] flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <span className="text-[12px] font-semibold text-[#26251e] block">
-                          سیکل تسویه پس‌پرداخت (هر چند جلسه یک‌بار تسویه شود؟)
-                        </span>
-                        <span className="text-[11px] text-[#807d72]">
-                          پس از رسیدن جلسات برگزارشده به این عدد، هشدار «موعد تسویه پس‌پرداخت» نمایش داده می‌شود.
+                    <div className="pt-2 border-t border-[#e6e5e0] space-y-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div>
+                          <span className="text-[12px] font-semibold text-[#26251e] block">
+                            سیکل تسویه دوره پس‌پرداخت (محاسبه دقیق از تقویم شمسی):
+                          </span>
+                          <span className="text-[11px] text-[#807d72]">
+                            تعداد جلسات بر اساس شمارش واقعی روزهای هفته در تقویم شمسی (شامل ماه‌های دارای ۵ هفته از یک روز مثل مهر ۱۴۰۵) محاسبه می‌شود.
+                          </span>
+                        </div>
+                        <span className="text-[12px] font-mono-code font-semibold text-[#f54e00]">
+                          {formatPostpaidCycleLabel(
+                            editStuPostpaidCycleType,
+                            editStuSelectedDays,
+                            editStuPostpaidCycle,
+                            editStuStartDate
+                          )}
                         </span>
                       </div>
-                      <div className="flex items-center gap-1.5">
-                        {[1, 4, 5, 8, 10].map((cycle) => (
-                          <button
-                            key={cycle}
-                            type="button"
-                            onClick={() => setEditStuPostpaidCycle(cycle)}
-                            className={`min-h-[38px] px-3 rounded-[6px] text-[12px] font-mono-code font-semibold border cursor-pointer ${
-                              editStuPostpaidCycle === cycle
-                                ? 'bg-[#f54e00] text-white border-[#f54e00]'
-                                : 'bg-[#ffffff] text-[#26251e] border-[#cfcdc4]'
-                            }`}
-                          >
-                            هر {toPersianDigits(cycle)} جلسه
-                          </button>
-                        ))}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {POSTPAID_CYCLE_OPTIONS.map((opt) => {
+                          const sessionsForOpt = calculatePostpaidCycleSessions(
+                            opt.id,
+                            editStuSelectedDays,
+                            editStuStartDate
+                          );
+                          const isSelected = editStuPostpaidCycleType === opt.id;
+                          return (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => setEditStuPostpaidCycleType(opt.id)}
+                              className={`min-h-[42px] px-2.5 py-1.5 rounded-[8px] border text-center transition-colors cursor-pointer ${
+                                isSelected
+                                  ? 'bg-[#f54e00] text-white border-[#f54e00]'
+                                  : 'bg-[#ffffff] text-[#26251e] border-[#cfcdc4] hover:border-[#26251e]'
+                              }`}
+                            >
+                              <span className="text-[12px] font-semibold block">
+                                {opt.label}
+                              </span>
+                              <span
+                                className={`text-[11px] font-mono-code block ${
+                                  isSelected ? 'text-white/90' : 'text-[#807d72]'
+                                }`}
+                              >
+                                {toPersianDigits(sessionsForOpt)} جلسه در تقویم
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Calendar Month Selector & Exact Per-Weekday Count Breakdown */}
+                      <div className="p-2.5 rounded-[8px] bg-[#ffffff] border border-[#e6e5e0] space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[11px] font-semibold text-[#26251e]">
+                            {editStuPostpaidDetails.breakdownSummary}
+                          </span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[11px] text-[#807d72]">
+                              ماه تقویم:
+                            </span>
+                            <select
+                              value={(() => {
+                                const [, m] = parseJalaliString(editStuStartDate);
+                                return m;
+                              })()}
+                              onChange={(e) => {
+                                const [y, , d] = parseJalaliString(editStuStartDate);
+                                const nextM = Number(e.target.value);
+                                const maxD = getJalaliMonthDays(y, nextM);
+                                setEditStuStartDate(
+                                  formatJalaliString(y, nextM, Math.min(d, maxD))
+                                );
+                              }}
+                              className="min-h-[32px] px-2 text-[12px] font-medium border border-[#cfcdc4] rounded-[6px] bg-[#fafaf7] text-[#26251e]"
+                            >
+                              {JALALI_MONTH_NAMES.map((mName, mIdx) => {
+                                const [y] = parseJalaliString(editStuStartDate);
+                                return (
+                                  <option key={mName} value={mIdx + 1}>
+                                    {mName} {toPersianDigits(y)}
+                                  </option>
+                                );
+                              })}
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {editStuPostpaidDetails.perWeekdayCounts.map((w) => (
+                            <span
+                              key={w.dayIndex}
+                              className={`text-[11px] font-mono-code px-2 py-0.5 rounded-[6px] border ${
+                                w.count >= 5
+                                  ? 'bg-[#f54e00]/10 text-[#f54e00] border-[#f54e00]/30 font-semibold'
+                                  : 'bg-[#fafaf7] text-[#5a5852] border-[#e6e5e0]'
+                              }`}
+                            >
+                              {w.dayName} در {editStuPostpaidDetails.referenceMonthTitle}:{' '}
+                              {toPersianDigits(w.count)} جلسه
+                            </span>
+                          ))}
+                        </div>
                       </div>
                     </div>
                   )}
@@ -1932,9 +2061,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     نوع حساب:{' '}
                     <span className="font-semibold text-[#26251e]">
                       {rechargingStudent.paymentType === 'postpaid'
-                        ? `پس‌پرداخت (سیکل تسویه هر ${toPersianDigits(
-                            rechargingStudent.postpaidCycleSessions || 4
-                          )} جلسه)`
+                        ? `پس‌پرداخت (${formatPostpaidCycleLabel(
+                            rechargingStudent.postpaidCycleType,
+                            rechargingStudent.selectedDays,
+                            rechargingStudent.postpaidCycleSessions,
+                            rechargingStudent.startDate
+                          )})`
                         : 'پیش‌پرداخت'}
                     </span>{' '}
                     · تراز فعلی:{' '}
@@ -2399,34 +2531,107 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   </div>
 
                   {stuPaymentType === 'postpaid' && (
-                    <div className="pt-2 border-t border-[#e6e5e0] space-y-2">
+                    <div className="pt-2 border-t border-[#e6e5e0] space-y-2.5">
                       <div className="flex items-center justify-between">
                         <span className="text-[12px] font-semibold text-[#26251e]">
-                          سیکل تسویه دوره پس‌پرداخت:
+                          سیکل تسویه دوره پس‌پرداخت (از تقویم شمسی):
                         </span>
                         <span className="text-[11px] font-mono-code text-[#f54e00] font-semibold">
-                          هر {toPersianDigits(stuPostpaidCycle)} جلسه
+                          {formatPostpaidCycleLabel(
+                            stuPostpaidCycleType,
+                            stuSelectedDays,
+                            stuPostpaidCycle,
+                            stuStartDate
+                          )}
                         </span>
                       </div>
-                      <div className="grid grid-cols-4 gap-1.5">
-                        {[1, 4, 5, 8].map((cycle) => (
-                          <button
-                            key={cycle}
-                            type="button"
-                            onClick={() => setStuPostpaidCycle(cycle)}
-                            className={`min-h-[36px] text-[12px] font-mono-code font-semibold rounded-[6px] border cursor-pointer ${
-                              stuPostpaidCycle === cycle
-                                ? 'bg-[#f54e00] text-white border-[#f54e00]'
-                                : 'bg-[#ffffff] text-[#26251e] border-[#cfcdc4]'
-                            }`}
-                          >
-                            {toPersianDigits(cycle)} جلسه
-                          </button>
-                        ))}
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                        {POSTPAID_CYCLE_OPTIONS.map((opt) => {
+                          const sessionsForOpt = calculatePostpaidCycleSessions(
+                            opt.id,
+                            stuSelectedDays,
+                            stuStartDate
+                          );
+                          const isSelected = stuPostpaidCycleType === opt.id;
+                          return (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => setStuPostpaidCycleType(opt.id)}
+                              className={`min-h-[42px] px-2 py-1.5 rounded-[6px] border text-center cursor-pointer transition-colors ${
+                                isSelected
+                                  ? 'bg-[#f54e00] text-white border-[#f54e00]'
+                                  : 'bg-[#ffffff] text-[#26251e] border-[#cfcdc4] hover:border-[#26251e]'
+                              }`}
+                            >
+                              <span className="text-[12px] font-semibold block">
+                                {opt.label}
+                              </span>
+                              <span
+                                className={`text-[10px] font-mono-code block ${
+                                  isSelected ? 'text-white/90' : 'text-[#807d72]'
+                                }`}
+                              >
+                                {toPersianDigits(sessionsForOpt)} جلسه
+                              </span>
+                            </button>
+                          );
+                        })}
                       </div>
-                      <p className="text-[11px] text-[#5a5852] leading-relaxed">
-                        در حالت پس‌پرداخت، تراز اولیه از ۰ شروع می‌شود و با هر جلسه حضور، تعداد جلسات برگزارشده برای تسویه پایان دوره محاسبه می‌گردد.
-                      </p>
+
+                      {/* Exact Jalali Calendar Breakdown & Month Selector (e.g., Mehr 1405 with 5 Wednesdays & 5 Thursdays) */}
+                      <div className="p-2.5 rounded-[8px] bg-[#ffffff] border border-[#e6e5e0] space-y-2">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-[11px] font-semibold text-[#26251e]">
+                            {stuPostpaidDetails.breakdownSummary}
+                          </span>
+                          <div className="flex items-center gap-1">
+                            <span className="text-[11px] text-[#807d72]">
+                              ماه تقویم:
+                            </span>
+                            <select
+                              value={(() => {
+                                const [, m] = parseJalaliString(stuStartDate);
+                                return m;
+                              })()}
+                              onChange={(e) => {
+                                const [y, , d] = parseJalaliString(stuStartDate);
+                                const nextM = Number(e.target.value);
+                                const maxD = getJalaliMonthDays(y, nextM);
+                                setStuStartDate(
+                                  formatJalaliString(y, nextM, Math.min(d, maxD))
+                                );
+                              }}
+                              className="min-h-[30px] px-2 text-[11px] font-medium border border-[#cfcdc4] rounded-[6px] bg-[#fafaf7] text-[#26251e]"
+                            >
+                              {JALALI_MONTH_NAMES.map((mName, mIdx) => {
+                                const [y] = parseJalaliString(stuStartDate);
+                                return (
+                                  <option key={mName} value={mIdx + 1}>
+                                    {mName} {toPersianDigits(y)}
+                                  </option>
+                                );
+                              })}
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {stuPostpaidDetails.perWeekdayCounts.map((w) => (
+                            <span
+                              key={w.dayIndex}
+                              className={`text-[11px] font-mono-code px-2 py-0.5 rounded-[6px] border ${
+                                w.count >= 5
+                                  ? 'bg-[#f54e00]/10 text-[#f54e00] border-[#f54e00]/30 font-semibold'
+                                  : 'bg-[#fafaf7] text-[#5a5852] border-[#e6e5e0]'
+                              }`}
+                            >
+                              {w.dayName} در {stuPostpaidDetails.referenceMonthTitle}:{' '}
+                              {toPersianDigits(w.count)} جلسه
+                            </span>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -2563,7 +2768,17 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   {filteredStudentsList.map((stu) => {
                     const isNegative = stu.sessionsLeft < 0;
                     const isPostpaid = stu.paymentType === 'postpaid';
-                    const postpaidCycle = stu.postpaidCycleSessions || 4;
+                    const postpaidCycle = calculatePostpaidCycleSessions(
+                      stu.postpaidCycleType,
+                      stu.selectedDays,
+                      stu.startDate
+                    );
+                    const postpaidLabel = formatPostpaidCycleLabel(
+                      stu.postpaidCycleType,
+                      stu.selectedDays,
+                      stu.postpaidCycleSessions,
+                      stu.startDate
+                    );
                     const isPostpaidCycleReached =
                       isPostpaid && Math.abs(stu.sessionsLeft) >= postpaidCycle && stu.sessionsLeft < 0;
                     const isExpanded = expandedStudentCardId === stu.id;
@@ -2586,7 +2801,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                               </span>
                               <span className="text-[11px] font-medium px-2 py-0.5 rounded-[6px] bg-[#fafaf7] border border-[#e6e5e0] text-[#5a5852]">
                                 {isPostpaid
-                                  ? `پس‌پرداخت (هر ${toPersianDigits(postpaidCycle)} جلسه)`
+                                  ? `پس‌پرداخت (${postpaidLabel})`
                                   : 'پیش‌پرداخت'}
                               </span>
                             </div>
@@ -2753,7 +2968,17 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       {filteredStudentsList.map((stu) => {
                         const isNegative = stu.sessionsLeft < 0;
                         const isPostpaid = stu.paymentType === 'postpaid';
-                        const postpaidCycle = stu.postpaidCycleSessions || 4;
+                        const postpaidCycle = calculatePostpaidCycleSessions(
+                          stu.postpaidCycleType,
+                          stu.selectedDays,
+                          stu.startDate
+                        );
+                        const postpaidLabel = formatPostpaidCycleLabel(
+                          stu.postpaidCycleType,
+                          stu.selectedDays,
+                          stu.postpaidCycleSessions,
+                          stu.startDate
+                        );
                         const isPostpaidCycleReached =
                           isPostpaid &&
                           stu.sessionsLeft < 0 &&
@@ -2801,7 +3026,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                               </div>
                               <div className="text-[12px] text-[#5a5852] mt-0.5">
                                 {isPostpaid
-                                  ? `پس‌پرداخت (سیکل ${toPersianDigits(postpaidCycle)} جلسه)`
+                                  ? `پس‌پرداخت (${postpaidLabel})`
                                   : 'پیش‌پرداخت (شارژ قبل از کلاس)'}
                               </div>
                             </td>
@@ -2829,7 +3054,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                   </div>
                                   {isPostpaidCycleReached && (
                                     <div className="text-[11px] font-semibold text-[#f54e00] mt-0.5">
-                                      موعد تسویه سیکل ({toPersianDigits(postpaidCycle)} جلسه) فرا رسیده است
+                                      موعد تسویه سیکل ({postpaidLabel}) فرا رسیده است
                                     </div>
                                   )}
                                   <div className="text-[11px] text-[#807d72] mt-0.5">
@@ -3655,9 +3880,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                           <div className="text-[12px] text-[#807d72]">
                             {stu.subject} ·{' '}
                             {isPostpaid
-                              ? `پس‌پرداخت (هر ${toPersianDigits(
-                                  stu.postpaidCycleSessions || 4
-                                )} جلسه)`
+                              ? `پس‌پرداخت (${formatPostpaidCycleLabel(
+                                  stu.postpaidCycleType,
+                                  stu.selectedDays,
+                                  stu.postpaidCycleSessions,
+                                  stu.startDate
+                                )})`
                               : 'پیش‌پرداخت'}
                           </div>
                         </td>

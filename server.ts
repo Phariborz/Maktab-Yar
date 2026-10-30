@@ -18,6 +18,9 @@ import {
   getTimeForJalaliDate,
   formatWeekdaysLabel,
   generateSessionDatesByWeekdays,
+  sanitizePostpaidCycleType,
+  calculatePostpaidCycleSessions,
+  formatPostpaidCycleLabel,
 } from './src/utils/jalali.ts';
 import type {
   Student,
@@ -29,6 +32,7 @@ import type {
   WsEventMessage,
   IntervalType,
   PaymentSystemType,
+  PostpaidCycleType,
 } from './src/types.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -418,6 +422,7 @@ function buildInitialSeedState(): ServerStateSnapshot {
       selectedDays: [2, 6], // دوشنبه، جمعه (ساعت‌های متفاوت)
       dayTimes: { '2': '16:00', '6': '10:00' },
       paymentType: 'postpaid',
+      postpaidCycleType: 'biweekly',
       postpaidCycleSessions: 4,
       intervalType: 'custom_days',
       intervalLabel: formatWeekdaysLabel([2, 6], { '2': '16:00', '6': '10:00' }, '18:00'),
@@ -955,13 +960,73 @@ async function startServer() {
   let state: ServerStateSnapshot = loadState();
   const otpStore = new Map<string, OtpEntry>();
   const sessionTokens = new Map<string, AuthSession>();
+  const revokedTokens = new Set<string>();
   const wsClientAuth = new WeakMap<WebSocket, AuthSession>();
+  const TOKEN_HMAC_SECRET = 'maktabyar_session_hmac_v1_secret';
+
+  function createSignedToken(
+    role: 'teacher' | 'student',
+    subjectId: string
+  ): string {
+    const nonce = crypto.randomBytes(8).toString('hex');
+    const payload = `${role}.${subjectId}.${nonce}`;
+    const sig = crypto
+      .createHmac('sha256', TOKEN_HMAC_SECRET)
+      .update(payload)
+      .digest('hex')
+      .slice(0, 32);
+    return `${payload}.${sig}`;
+  }
+
+  function resolveSessionFromToken(token: string): AuthSession | null {
+    if (!token || revokedTokens.has(token)) return null;
+    const existing = sessionTokens.get(token);
+    if (existing) return existing;
+
+    const parts = token.split('.');
+    if (parts.length === 4) {
+      const [role, subjectId, nonce, sig] = parts;
+      const payload = `${role}.${subjectId}.${nonce}`;
+      const expectedSig = crypto
+        .createHmac('sha256', TOKEN_HMAC_SECRET)
+        .update(payload)
+        .digest('hex')
+        .slice(0, 32);
+      if (sig === expectedSig) {
+        if (role === 'teacher') {
+          const teacher = TEACHERS_CONFIG.find((t) => t.id === subjectId);
+          if (teacher) {
+            const restored: AuthSession = {
+              role: 'teacher',
+              teacherId: teacher.id,
+              createdAt: Date.now(),
+            };
+            sessionTokens.set(token, restored);
+            return restored;
+          }
+        } else if (role === 'student') {
+          const student = state.students.find((s) => s.id === subjectId);
+          if (student) {
+            const restored: AuthSession = {
+              role: 'student',
+              studentId: student.id,
+              teacherId: student.teacherId,
+              createdAt: Date.now(),
+            };
+            sessionTokens.set(token, restored);
+            return restored;
+          }
+        }
+      }
+    }
+    return null;
+  }
 
   function getAuthSessionFromRequest(req: express.Request): AuthSession | null {
     const authHeader = req.headers.authorization || '';
     if (!authHeader.startsWith('Bearer ')) return null;
     const token = authHeader.slice(7).trim();
-    return sessionTokens.get(token) || null;
+    return resolveSessionFromToken(token);
   }
 
   function requireTeacherAuth(
@@ -1037,7 +1102,7 @@ async function startServer() {
     try {
       const urlObj = new URL(req.url || '/ws', 'http://localhost:3000');
       const token = urlObj.searchParams.get('token') || '';
-      const authSess = sessionTokens.get(token);
+      const authSess = resolveSessionFromToken(token);
 
       if (authSess) {
         wsClientAuth.set(ws, authSess);
@@ -1065,7 +1130,7 @@ async function startServer() {
       try {
         const msg = JSON.parse(String(raw));
         if (msg && msg.type === 'auth' && typeof msg.token === 'string') {
-          const authSess = sessionTokens.get(msg.token);
+          const authSess = resolveSessionFromToken(msg.token);
           if (authSess) {
             wsClientAuth.set(ws, authSess);
             if (authSess.role === 'teacher' && authSess.teacherId) {
@@ -1114,7 +1179,7 @@ async function startServer() {
       return;
     }
 
-    const token = `tchr_${crypto.randomBytes(24).toString('hex')}`;
+    const token = createSignedToken('teacher', matchedTeacher.id);
     sessionTokens.set(token, {
       role: 'teacher',
       teacherId: matchedTeacher.id,
@@ -1134,11 +1199,50 @@ async function startServer() {
     });
   });
 
+  app.get('/api/auth/session', (req, res) => {
+    const authSess = getAuthSessionFromRequest(req);
+    if (!authSess) {
+      res.status(401).json({ error: 'نشست کاربری معتبر نیست.' });
+      return;
+    }
+    if (authSess.role === 'teacher' && authSess.teacherId) {
+      const teacher = getTeacherById(authSess.teacherId);
+      res.json({
+        ok: true,
+        role: 'teacher',
+        teacher: {
+          id: teacher.id,
+          name: teacher.name,
+          username: teacher.username,
+          phone: teacher.phoneDisplay,
+        },
+        state: buildTeacherIsolatedSnapshot(state, teacher.id),
+      });
+      return;
+    }
+    if (authSess.role === 'student' && authSess.studentId) {
+      const student = state.students.find((s) => s.id === authSess.studentId);
+      if (!student) {
+        res.status(404).json({ error: 'دانش‌آموز یافت نشد.' });
+        return;
+      }
+      res.json({
+        ok: true,
+        role: 'student',
+        student,
+        isolatedState: buildStudentIsolatedSnapshot(state, student.id),
+      });
+      return;
+    }
+    res.status(401).json({ error: 'نشست نامعتبر.' });
+  });
+
   app.post('/api/auth/logout', (req, res) => {
     const authHeader = req.headers.authorization || '';
     if (authHeader.startsWith('Bearer ')) {
       const token = authHeader.slice(7).trim();
       sessionTokens.delete(token);
+      revokedTokens.add(token);
     }
     res.json({ ok: true });
   });
@@ -1197,7 +1301,7 @@ async function startServer() {
       return;
     }
 
-    const token = `stu_${crypto.randomBytes(24).toString('hex')}`;
+    const token = createSignedToken('student', student.id);
     sessionTokens.set(token, {
       role: 'student',
       studentId: student.id,
@@ -1294,7 +1398,7 @@ async function startServer() {
       return;
     }
 
-    const token = `stu_${crypto.randomBytes(24).toString('hex')}`;
+    const token = createSignedToken('student', student.id);
     sessionTokens.set(token, {
       role: 'student',
       studentId: student.id,
@@ -1358,6 +1462,7 @@ async function startServer() {
       selectedDays: rawSelectedDays,
       dayTimes: rawDayTimes,
       paymentType: rawPaymentType,
+      postpaidCycleType: rawPostpaidCycleType,
       postpaidCycleSessions: rawPostpaidCycle,
       intervalType,
       intervalLabel,
@@ -1409,10 +1514,27 @@ async function startServer() {
 
     const paymentType: PaymentSystemType =
       rawPaymentType === 'postpaid' ? 'postpaid' : 'prepaid';
-    const postpaidCycleSessions = Math.max(
-      1,
-      Math.min(50, Number(rawPostpaidCycle) || 4)
+    const postpaidCycleType: PostpaidCycleType = sanitizePostpaidCycleType(
+      rawPostpaidCycleType
     );
+    const postpaidCycleSessions = rawPostpaidCycleType
+      ? calculatePostpaidCycleSessions(
+          postpaidCycleType,
+          cleanSelectedDays,
+          cleanStart
+        )
+      : Math.max(
+          1,
+          Math.min(
+            50,
+            Number(rawPostpaidCycle) ||
+              calculatePostpaidCycleSessions(
+                postpaidCycleType,
+                cleanSelectedDays,
+                cleanStart
+              )
+          )
+        );
 
     const initialSessionsLeft =
       sessionsLeft !== undefined && !isNaN(Number(sessionsLeft))
@@ -1434,6 +1556,7 @@ async function startServer() {
       selectedDays: cleanSelectedDays,
       dayTimes: cleanDayTimes,
       paymentType,
+      postpaidCycleType,
       postpaidCycleSessions,
       intervalType: (intervalType as IntervalType) || 'custom_days',
       intervalLabel: computedIntervalLabel.slice(0, 120),
@@ -1501,7 +1624,12 @@ async function startServer() {
 
     const paymentTypeLabel =
       paymentType === 'postpaid'
-        ? `پس‌پرداخت (تسویه هر ${toPersianDigits(postpaidCycleSessions)} جلسه)`
+        ? `پس‌پرداخت (${formatPostpaidCycleLabel(
+            postpaidCycleType,
+            cleanSelectedDays,
+            postpaidCycleSessions,
+            cleanStart
+          )})`
         : `پیش‌پرداخت (اعتبار ${formatSignedPersianNumber(initialSessionsLeft)} جلسه)`;
 
     const notif: AppNotification = {
@@ -1550,6 +1678,7 @@ async function startServer() {
       selectedDays: rawSelectedDays,
       dayTimes: rawDayTimes,
       paymentType: rawPaymentType,
+      postpaidCycleType: rawPostpaidCycleType,
       postpaidCycleSessions: rawPostpaidCycle,
       tuitionPerSession,
       sessionsLeft,
@@ -1624,7 +1753,23 @@ async function startServer() {
     if (rawPaymentType === 'prepaid' || rawPaymentType === 'postpaid') {
       student.paymentType = rawPaymentType;
     }
-    if (rawPostpaidCycle !== undefined && !isNaN(Number(rawPostpaidCycle))) {
+    if (rawPostpaidCycleType !== undefined) {
+      student.postpaidCycleType = sanitizePostpaidCycleType(rawPostpaidCycleType);
+      student.postpaidCycleSessions = calculatePostpaidCycleSessions(
+        student.postpaidCycleType,
+        student.selectedDays,
+        student.startDate
+      );
+    } else if (
+      (rawSelectedDays !== undefined || startDate !== undefined) &&
+      student.postpaidCycleType
+    ) {
+      student.postpaidCycleSessions = calculatePostpaidCycleSessions(
+        student.postpaidCycleType,
+        student.selectedDays,
+        student.startDate
+      );
+    } else if (rawPostpaidCycle !== undefined && !isNaN(Number(rawPostpaidCycle))) {
       student.postpaidCycleSessions = Math.max(
         1,
         Math.min(50, Number(rawPostpaidCycle))

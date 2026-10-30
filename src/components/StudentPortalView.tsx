@@ -27,6 +27,7 @@ import {
   formatReadableJalali,
   getCurrentJalaliDate,
   formatStudentScheduleSummary,
+  formatPostpaidCycleLabel,
 } from '../utils/jalali';
 import { JalaliCalendar } from './JalaliCalendar';
 import type {
@@ -47,7 +48,8 @@ interface StudentPortalViewProps {
   onLoginSuccess: (
     token: string,
     student: Student,
-    isolatedState: ServerStateSnapshot
+    isolatedState: ServerStateSnapshot,
+    rememberMe?: boolean
   ) => void;
   onLogoutStudent: () => void;
   onSubmitRechargeRequest: (
@@ -82,6 +84,7 @@ export const StudentPortalView: React.FC<StudentPortalViewProps> = ({
   const [loginMethod, setLoginMethod] = useState<'password' | 'otp'>('password');
   const [phoneInput, setPhoneInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
+  const [rememberMe, setRememberMe] = useState(true);
 
   // OTP state
   const [otpStep, setOtpStep] = useState<'phone' | 'verify'>('phone');
@@ -146,7 +149,7 @@ export const StudentPortalView: React.FC<StudentPortalViewProps> = ({
       if (!res.ok) {
         setAuthError(data.error || 'شماره موبایل یا رمز عبور نادرست است.');
       } else if (data.student && data.token && data.isolatedState) {
-        onLoginSuccess(data.token, data.student, data.isolatedState);
+        onLoginSuccess(data.token, data.student, data.isolatedState, rememberMe);
         setPasswordInput('');
       }
     } catch {
@@ -204,7 +207,7 @@ export const StudentPortalView: React.FC<StudentPortalViewProps> = ({
       if (!res.ok) {
         setAuthError(data.error || 'کد تایید نامعتبر است.');
       } else if (data.student && data.token && data.isolatedState) {
-        onLoginSuccess(data.token, data.student, data.isolatedState);
+        onLoginSuccess(data.token, data.student, data.isolatedState, rememberMe);
         setOtpStep('phone');
         setDispatchedOtp(null);
         setOtpCodeInput('');
@@ -319,6 +322,18 @@ export const StudentPortalView: React.FC<StudentPortalViewProps> = ({
                 </div>
               </div>
 
+              <label className="flex items-center gap-2.5 py-1 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="w-4 h-4 accent-[#f54e00] rounded cursor-pointer"
+                />
+                <span className="text-[13px] font-medium text-[#26251e]">
+                  مرا به خاطر بسپار (حفظ ورود پس از رفرش صفحه)
+                </span>
+              </label>
+
               <button
                 type="submit"
                 disabled={authLoading}
@@ -352,6 +367,18 @@ export const StudentPortalView: React.FC<StudentPortalViewProps> = ({
                   <Phone className="w-4 h-4 text-[#807d72] absolute right-3.5 top-4" />
                 </div>
               </div>
+
+              <label className="flex items-center gap-2.5 py-1 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="w-4 h-4 accent-[#f54e00] rounded cursor-pointer"
+                />
+                <span className="text-[13px] font-medium text-[#26251e]">
+                  مرا به خاطر بسپار (حفظ ورود پس از رفرش صفحه)
+                </span>
+              </label>
 
               <button
                 type="submit"
@@ -414,6 +441,18 @@ export const StudentPortalView: React.FC<StudentPortalViewProps> = ({
                 </div>
               </div>
 
+              <label className="flex items-center gap-2.5 py-1 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  className="w-4 h-4 accent-[#f54e00] rounded cursor-pointer"
+                />
+                <span className="text-[13px] font-medium text-[#26251e]">
+                  مرا به خاطر بسپار (حفظ ورود پس از رفرش صفحه)
+                </span>
+              </label>
+
               <div className="flex items-center gap-3">
                 <button
                   type="submit"
@@ -453,7 +492,12 @@ export const StudentPortalView: React.FC<StudentPortalViewProps> = ({
   const currentStudent = loggedInStudent;
   const isNegativeCredit = currentStudent.sessionsLeft < 0;
   const isPostpaid = currentStudent.paymentType === 'postpaid';
-  const postpaidCycle = currentStudent.postpaidCycleSessions || 4;
+  const postpaidCycleLabel = formatPostpaidCycleLabel(
+    currentStudent.postpaidCycleType,
+    currentStudent.selectedDays,
+    currentStudent.postpaidCycleSessions,
+    currentStudent.startDate
+  );
   const scheduleSummary = formatStudentScheduleSummary(
     currentStudent.selectedDays,
     currentStudent.classTime,
@@ -561,7 +605,7 @@ export const StudentPortalView: React.FC<StudentPortalViewProps> = ({
               </span>
               <span className="hidden sm:inline">
                 {isPostpaid
-                  ? `سیکل تسویه شما هر ${toPersianDigits(postpaidCycle)} جلسه است. از دکمه مقابل می‌توانید ثبت واریز تسویه را ارسال کنید.`
+                  ? `سیکل تسویه شما ${postpaidCycleLabel} است. از دکمه مقابل می‌توانید ثبت واریز تسویه را ارسال کنید.`
                   : 'در صورت شارژ مجدد حساب، تعداد جلسات معوق به صورت خودکار از شارژ جدید شما کسر خواهد شد.'}
               </span>
             </div>
@@ -587,7 +631,7 @@ export const StudentPortalView: React.FC<StudentPortalViewProps> = ({
               {teacherDisplayName} · {scheduleSummary} ·{' '}
               <span className="font-semibold text-[#26251e]">
                 {isPostpaid
-                  ? `حساب پس‌پرداخت (هر ${toPersianDigits(postpaidCycle)} جلسه)`
+                  ? `حساب پس‌پرداخت (${postpaidCycleLabel})`
                   : 'حساب پیش‌پرداخت'}
               </span>
             </div>

@@ -352,6 +352,241 @@ export function getTimeForJalaliDate(
   return fb;
 }
 
+export const POSTPAID_CYCLE_OPTIONS: Array<{
+  id: 'per_session' | 'weekly' | 'biweekly' | 'monthly';
+  label: string;
+}> = [
+  { id: 'per_session', label: 'هر جلسه' },
+  { id: 'weekly', label: 'هفتگی' },
+  { id: 'biweekly', label: 'دو هفتگی' },
+  { id: 'monthly', label: 'ماهانه' },
+];
+
+export function sanitizePostpaidCycleType(
+  raw: unknown
+): 'per_session' | 'weekly' | 'biweekly' | 'monthly' {
+  if (
+    raw === 'per_session' ||
+    raw === 'weekly' ||
+    raw === 'biweekly' ||
+    raw === 'monthly'
+  ) {
+    return raw;
+  }
+  return 'monthly';
+}
+
+export interface JalaliMonthWeekdayStat {
+  dayIndex: number;
+  dayName: string;
+  count: number;
+  dates: string[];
+}
+
+export interface JalaliMonthMatchingResult {
+  year: number;
+  month: number;
+  monthName: string;
+  monthTitle: string;
+  daysInMonth: number;
+  totalSessions: number;
+  dates: string[];
+  perWeekdayCounts: JalaliMonthWeekdayStat[];
+}
+
+/**
+ * Counts exact occurrences of `selectedDays` (0=Saturday .. 6=Friday) in a specific
+ * Jalali calendar month (`jy`, `jm`), accurately handling 31-day, 30-day, and 29-day
+ * months where certain weekdays occur 5 times (e.g., Mehr 1405 having 5 Wednesdays and 5 Thursdays).
+ */
+export function getJalaliMonthMatchingDates(
+  jy: number,
+  jm: number,
+  selectedDays: number[]
+): JalaliMonthMatchingResult {
+  const cleanDays = sanitizeSelectedDays(selectedDays);
+  const validMonth = Math.max(1, Math.min(12, jm || 1));
+  const validYear = jy > 1300 && jy < 1500 ? jy : getCurrentJalaliDate().year;
+  const daysInMonth = getJalaliMonthDays(validYear, validMonth);
+  const monthName = JALALI_MONTH_NAMES[validMonth - 1] || '';
+  const monthTitle = `${monthName} ${toPersianDigits(validYear)}`;
+
+  const datesByDay = new Map<number, string[]>();
+  cleanDays.forEach((d) => datesByDay.set(d, []));
+  const allDates: string[] = [];
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dow = getJalaliDayOfWeek(validYear, validMonth, d);
+    if (cleanDays.includes(dow)) {
+      const formatted = formatJalaliString(validYear, validMonth, d);
+      allDates.push(formatted);
+      datesByDay.get(dow)?.push(formatted);
+    }
+  }
+
+  const perWeekdayCounts: JalaliMonthWeekdayStat[] = cleanDays.map((dayIdx) => {
+    const dList = datesByDay.get(dayIdx) || [];
+    return {
+      dayIndex: dayIdx,
+      dayName: JALALI_WEEKDAYS[dayIdx],
+      count: dList.length,
+      dates: dList,
+    };
+  });
+
+  return {
+    year: validYear,
+    month: validMonth,
+    monthName,
+    monthTitle,
+    daysInMonth,
+    totalSessions: allDates.length,
+    dates: allDates,
+    perWeekdayCounts,
+  };
+}
+
+export interface PostpaidCycleCalendarDetails {
+  cycleType: 'per_session' | 'weekly' | 'biweekly' | 'monthly';
+  sessionsCount: number;
+  dates: string[];
+  referenceMonthTitle: string;
+  daysInReferenceMonth: number;
+  perWeekdayCounts: JalaliMonthWeekdayStat[];
+  remainingInMonthFromStart: number;
+  breakdownSummary: string;
+}
+
+/**
+ * Computes exact postpaid cycle session counts and dates directly from the Jalali calendar.
+ */
+export function calculatePostpaidCycleDetails(
+  cycleType: 'per_session' | 'weekly' | 'biweekly' | 'monthly' | undefined,
+  selectedDays: number[],
+  referenceJalaliDate?: string
+): PostpaidCycleCalendarDetails {
+  const cleanType = sanitizePostpaidCycleType(cycleType);
+  const cleanDays = sanitizeSelectedDays(selectedDays);
+  const refStr =
+    referenceJalaliDate && referenceJalaliDate.trim()
+      ? referenceJalaliDate.trim()
+      : getCurrentJalaliDate().formatted;
+  const [jy, jm, jd] = parseJalaliString(refStr);
+  const monthResult = getJalaliMonthMatchingDates(jy, jm, cleanDays);
+
+  const remainingInMonthFromStart = monthResult.dates.filter((dStr) => {
+    const [, , dayNum] = parseJalaliString(dStr);
+    return dayNum >= jd;
+  }).length;
+
+  if (cleanType === 'per_session') {
+    const nextDates = generateSessionDatesByWeekdays(refStr, cleanDays, 1);
+    return {
+      cycleType: cleanType,
+      sessionsCount: 1,
+      dates: nextDates,
+      referenceMonthTitle: monthResult.monthTitle,
+      daysInReferenceMonth: monthResult.daysInMonth,
+      perWeekdayCounts: monthResult.perWeekdayCounts,
+      remainingInMonthFromStart,
+      breakdownSummary: 'تسویه در پایان هر ۱ جلسه کلاسی',
+    };
+  }
+
+  if (cleanType === 'weekly' || cleanType === 'biweekly') {
+    const windowDays = cleanType === 'weekly' ? 7 : 14;
+    const matchedDates: string[] = [];
+    for (let offset = 0; offset < windowDays; offset++) {
+      const candidate = addJalaliDays(refStr, offset);
+      const [cy, cm, cd] = parseJalaliString(candidate);
+      const dow = getJalaliDayOfWeek(cy, cm, cd);
+      if (cleanDays.includes(dow)) {
+        matchedDates.push(candidate);
+      }
+    }
+    const endWindowDate = addJalaliDays(refStr, windowDays - 1);
+    return {
+      cycleType: cleanType,
+      sessionsCount: Math.max(1, matchedDates.length),
+      dates: matchedDates,
+      referenceMonthTitle: monthResult.monthTitle,
+      daysInReferenceMonth: monthResult.daysInMonth,
+      perWeekdayCounts: monthResult.perWeekdayCounts,
+      remainingInMonthFromStart,
+      breakdownSummary: `بازه ${toPersianDigits(windowDays)} روزه تقویم (${toPersianDigits(
+        refStr
+      )} تا ${toPersianDigits(endWindowDate)}): ${toPersianDigits(
+        matchedDates.length
+      )} جلسه`,
+    };
+  }
+
+  // Monthly: exact count from the Jalali calendar month (accounting for 4 vs 5 occurrences of each weekday)
+  const weekdayParts = monthResult.perWeekdayCounts
+    .map((w) => `${w.dayName} (${toPersianDigits(w.count)} جلسه)`)
+    .join(' + ');
+
+  return {
+    cycleType: 'monthly',
+    sessionsCount: Math.max(1, monthResult.totalSessions),
+    dates: monthResult.dates,
+    referenceMonthTitle: monthResult.monthTitle,
+    daysInReferenceMonth: monthResult.daysInMonth,
+    perWeekdayCounts: monthResult.perWeekdayCounts,
+    remainingInMonthFromStart,
+    breakdownSummary: `تقویم ${monthResult.monthTitle} (${toPersianDigits(
+      monthResult.daysInMonth
+    )} روزه): ${weekdayParts} = ${toPersianDigits(monthResult.totalSessions)} جلسه`,
+  };
+}
+
+/**
+ * Dynamically calculates the number of sessions in a postpaid settlement cycle
+ * directly from the Iranian Jalali calendar (accounting for 5-occurrence weekdays in a month).
+ */
+export function calculatePostpaidCycleSessions(
+  cycleType: 'per_session' | 'weekly' | 'biweekly' | 'monthly' | undefined,
+  selectedDays: number[],
+  referenceJalaliDate?: string
+): number {
+  return calculatePostpaidCycleDetails(
+    cycleType,
+    selectedDays,
+    referenceJalaliDate
+  ).sessionsCount;
+}
+
+export function formatPostpaidCycleLabel(
+  cycleType: 'per_session' | 'weekly' | 'biweekly' | 'monthly' | undefined,
+  selectedDays: number[],
+  fallbackCycleSessions?: number,
+  referenceJalaliDate?: string
+): string {
+  const cleanType = cycleType
+    ? sanitizePostpaidCycleType(cycleType)
+    : undefined;
+  const details = cleanType
+    ? calculatePostpaidCycleDetails(cleanType, selectedDays, referenceJalaliDate)
+    : undefined;
+  const sessionsCount = details
+    ? details.sessionsCount
+    : fallbackCycleSessions ||
+      calculatePostpaidCycleSessions('monthly', selectedDays, referenceJalaliDate);
+
+  const labelMap: Record<
+    'per_session' | 'weekly' | 'biweekly' | 'monthly',
+    string
+  > = {
+    per_session: 'هر جلسه',
+    weekly: 'هفتگی',
+    biweekly: 'دو هفتگی',
+    monthly: details ? `ماهانه — ${details.referenceMonthTitle}` : 'ماهانه',
+  };
+
+  const title = cleanType ? labelMap[cleanType] : 'دوره‌ای';
+  return `${title} (${toPersianDigits(sessionsCount)} جلسه)`;
+}
+
 /**
  * Generates upcoming Jalali dates starting on or after `startDateJalali`
  * that fall on any of the teacher's selected weekdays (`0..6`).
