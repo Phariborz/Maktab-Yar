@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#26251E"/>
+  <rect x="36" y="36" width="440" height="440" rx="84" stroke="#F54E00" stroke-width="12" stroke-opacity="0.35"/>
+  <!-- Stylized Book & Calendar Pages for MaktabYar -->
+  <path d="M144 168C144 150.327 158.327 136 176 136H336C353.673 136 368 150.327 368 168V344C368 361.673 353.673 376 336 376H176C158.327 376 144 361.673 144 344V168Z" fill="#F7F7F4"/>
+  <path d="M144 168C144 150.327 158.327 136 176 136H336C353.673 136 368 150.327 368 168V204H144V168Z" fill="#F54E00"/>
+  <circle cx="204" cy="170" r="10" fill="#FFFFFF"/>
+  <circle cx="308" cy="170" r="10" fill="#FFFFFF"/>
+  <rect x="184" y="240" width="144" height="20" rx="10" fill="#26251E"/>
+  <rect x="184" y="280" width="104" height="20" rx="10" fill="#5A5852"/>
+  <circle cx="316" cy="318" r="26" fill="#F54E00"/>
+  <path d="M305 318L313 326L329 310" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,0 +1,457 @@
+{
+  "entities": {
+    "Student": {
+      "title": "Student",
+      "description": "Represents a private class student with preset login password, selectable weekdays schedule, custom session tuition, and session credit balance (including negative credit for delayed payments).",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Full name of the student in Farsi",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "phone": {
+          "type": "string",
+          "description": "Iranian mobile phone number used for student login",
+          "minLength": 10,
+          "maxLength": 15,
+          "pattern": "^09[0-9]{9}$"
+        },
+        "password": {
+          "type": "string",
+          "description": "Student login password preset and editable by the teacher",
+          "minLength": 3,
+          "maxLength": 100
+        },
+        "subject": {
+          "type": "string",
+          "description": "Subject or course name",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "startDate": {
+          "type": "string",
+          "description": "Jalali start date (YYYY/MM/DD)",
+          "minLength": 8,
+          "maxLength": 20
+        },
+        "classTime": {
+          "type": "string",
+          "description": "Scheduled class time in HH:MM format",
+          "minLength": 4,
+          "maxLength": 10,
+          "pattern": "^[0-2][0-9]:[0-5][0-9]$"
+        },
+        "selectedDays": {
+          "type": "array",
+          "description": "Selected Iranian weekday indices (0=Shanbeh .. 6=Jomeh), max 7 items"
+        },
+        "intervalType": {
+          "type": "string",
+          "description": "Recurring schedule interval type",
+          "enum": ["weekly", "twice_weekly", "biweekly", "custom_days"]
+        },
+        "intervalLabel": {
+          "type": "string",
+          "description": "Human-readable Farsi label for selected weekdays",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "tuitionPerSession": {
+          "type": "number",
+          "description": "Custom tuition fee per session in Tomans"
+        },
+        "sessionsLeft": {
+          "type": "number",
+          "description": "Remaining paid sessions balance (can be negative when payment is delayed)"
+        },
+        "totalSessionsPaid": {
+          "type": "number",
+          "description": "Total cumulative paid sessions"
+        },
+        "totalAttended": {
+          "type": "number",
+          "description": "Total cumulative attended sessions"
+        },
+        "teacherId": {
+          "type": "string",
+          "description": "UID of the teacher managing this student",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp"
+        }
+      },
+      "required": [
+        "name",
+        "phone",
+        "password",
+        "subject",
+        "startDate",
+        "classTime",
+        "selectedDays",
+        "intervalType",
+        "intervalLabel",
+        "tuitionPerSession",
+        "sessionsLeft",
+        "totalSessionsPaid",
+        "totalAttended",
+        "teacherId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ClassSession": {
+      "title": "ClassSession",
+      "description": "Represents an individual class session on the Iranian Jalali calendar with attendance and grade tracking.",
+      "type": "object",
+      "properties": {
+        "studentId": {
+          "type": "string",
+          "description": "Reference ID of the student",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "studentName": {
+          "type": "string",
+          "description": "Student full name",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "studentPhone": {
+          "type": "string",
+          "description": "Student phone number",
+          "minLength": 10,
+          "maxLength": 15,
+          "pattern": "^09[0-9]{9}$"
+        },
+        "subject": {
+          "type": "string",
+          "description": "Course subject",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "jalaliDate": {
+          "type": "string",
+          "description": "Session date in Jalali format YYYY/MM/DD",
+          "minLength": 8,
+          "maxLength": 20
+        },
+        "time": {
+          "type": "string",
+          "description": "Session start time HH:MM",
+          "minLength": 4,
+          "maxLength": 10,
+          "pattern": "^[0-2][0-9]:[0-5][0-9]$"
+        },
+        "attendanceStatus": {
+          "type": "string",
+          "description": "Attendance state of the session (absent_charged deducts 1 session from credit)",
+          "enum": ["scheduled", "present", "absent_charged", "absent", "excused"]
+        },
+        "grade": {
+          "type": "number",
+          "description": "Session grade on the 0 to 20 Iranian scale (-1 if ungraded)"
+        },
+        "topic": {
+          "type": "string",
+          "description": "Lesson topic covered in this session",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "teacherNote": {
+          "type": "string",
+          "description": "Teacher feedback or homework note",
+          "minLength": 0,
+          "maxLength": 500
+        },
+        "teacherId": {
+          "type": "string",
+          "description": "UID of the teacher",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Update timestamp"
+        }
+      },
+      "required": [
+        "studentId",
+        "studentName",
+        "studentPhone",
+        "subject",
+        "jalaliDate",
+        "time",
+        "attendanceStatus",
+        "grade",
+        "topic",
+        "teacherNote",
+        "teacherId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "RechargeRequest": {
+      "title": "RechargeRequest",
+      "description": "Represents a student request to recharge their session balance requiring teacher approval.",
+      "type": "object",
+      "properties": {
+        "studentId": {
+          "type": "string",
+          "description": "ID of the student requesting recharge",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "studentName": {
+          "type": "string",
+          "description": "Name of the student",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "studentPhone": {
+          "type": "string",
+          "description": "Phone number of the student",
+          "minLength": 10,
+          "maxLength": 15,
+          "pattern": "^09[0-9]{9}$"
+        },
+        "requestedSessions": {
+          "type": "number",
+          "description": "Number of additional sessions requested"
+        },
+        "totalAmount": {
+          "type": "number",
+          "description": "Calculated tuition amount in Tomans"
+        },
+        "paymentNote": {
+          "type": "string",
+          "description": "Payment reference or receipt note",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "status": {
+          "type": "string",
+          "description": "Approval state of the recharge request",
+          "enum": ["pending", "approved", "rejected"]
+        },
+        "teacherId": {
+          "type": "string",
+          "description": "UID of the teacher who owns the class",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Update timestamp"
+        }
+      },
+      "required": [
+        "studentId",
+        "studentName",
+        "studentPhone",
+        "requestedSessions",
+        "totalAmount",
+        "paymentNote",
+        "status",
+        "teacherId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Direct communication message between teacher and student.",
+      "type": "object",
+      "properties": {
+        "studentId": {
+          "type": "string",
+          "description": "Student conversation thread ID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "studentName": {
+          "type": "string",
+          "description": "Student name",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "senderRole": {
+          "type": "string",
+          "description": "Role of the message sender",
+          "enum": ["teacher", "student"]
+        },
+        "senderName": {
+          "type": "string",
+          "description": "Display name of sender",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "text": {
+          "type": "string",
+          "description": "Message text content",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "jalaliTime": {
+          "type": "string",
+          "description": "Formatted Jalali timestamp string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "teacherId": {
+          "type": "string",
+          "description": "Teacher UID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        }
+      },
+      "required": [
+        "studentId",
+        "studentName",
+        "senderRole",
+        "senderName",
+        "text",
+        "jalaliTime",
+        "teacherId",
+        "createdAt"
+      ]
+    },
+    "AppNotification": {
+      "title": "AppNotification",
+      "description": "Real-time notification for session reminders, recharge requests, and payment approvals.",
+      "type": "object",
+      "properties": {
+        "targetRole": {
+          "type": "string",
+          "description": "Target audience role",
+          "enum": ["teacher", "student"]
+        },
+        "targetStudentId": {
+          "type": "string",
+          "description": "Target student ID when notification is for a specific student",
+          "minLength": 0,
+          "maxLength": 128
+        },
+        "type": {
+          "type": "string",
+          "description": "Category of notification",
+          "enum": [
+            "session_reminder",
+            "payment_approved",
+            "payment_rejected",
+            "recharge_requested",
+            "grade_posted",
+            "new_message"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "description": "Short notification title",
+          "minLength": 1,
+          "maxLength": 150
+        },
+        "body": {
+          "type": "string",
+          "description": "Notification message body",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "jalaliTime": {
+          "type": "string",
+          "description": "Formatted Jalali date/time",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "isRead": {
+          "type": "boolean",
+          "description": "Whether notification has been read"
+        },
+        "teacherId": {
+          "type": "string",
+          "description": "Teacher UID",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Creation timestamp"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Update timestamp"
+        }
+      },
+      "required": [
+        "targetRole",
+        "targetStudentId",
+        "type",
+        "title",
+        "body",
+        "jalaliTime",
+        "isRead",
+        "teacherId",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/students/{studentId}": {
+      "schema": { "$ref": "#/entities/Student" },
+      "description": "Stores private class students managed by teachers."
+    },
+    "/sessions/{sessionId}": {
+      "schema": { "$ref": "#/entities/ClassSession" },
+      "description": "Stores scheduled and completed class sessions with attendance and grades."
+    },
+    "/rechargeRequests/{requestId}": {
+      "schema": { "$ref": "#/entities/RechargeRequest" },
+      "description": "Stores student session recharge payment requests awaiting teacher approval."
+    },
+    "/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/ChatMessage" },
+      "description": "Stores direct chat messages between teachers and students."
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/AppNotification" },
+      "description": "Stores real-time notifications for reminders and payment status updates."
+    }
+  }
+}

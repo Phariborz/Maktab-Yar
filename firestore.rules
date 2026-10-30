@@ -1,0 +1,332 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: Default-Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // =========================================================================
+    // Phase 3: Hardened Global Helpers
+    // =========================================================================
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'Fariborz.Fa.1991@gmail.com'
+      );
+    }
+
+    // =========================================================================
+    // Validation Blueprints (Anti-Update-Gap)
+    // =========================================================================
+    function isValidStudent(data) {
+      return data.keys().hasAll([
+        'name', 'phone', 'password', 'subject', 'startDate', 'classTime',
+        'selectedDays', 'intervalType', 'intervalLabel', 'tuitionPerSession',
+        'sessionsLeft', 'totalSessionsPaid', 'totalAttended',
+        'teacherId', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'name', 'phone', 'password', 'subject', 'startDate', 'classTime',
+        'selectedDays', 'intervalType', 'intervalLabel', 'tuitionPerSession',
+        'sessionsLeft', 'totalSessionsPaid', 'totalAttended',
+        'teacherId', 'createdAt', 'updatedAt'
+      ]) &&
+      data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+      data.phone is string && data.phone.size() >= 10 && data.phone.size() <= 15 && data.phone.matches('^09[0-9]{9}$') &&
+      data.password is string && data.password.size() >= 3 && data.password.size() <= 100 &&
+      data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 100 &&
+      data.startDate is string && data.startDate.size() >= 8 && data.startDate.size() <= 20 &&
+      data.classTime is string && data.classTime.size() >= 4 && data.classTime.size() <= 10 && data.classTime.matches('^[0-2][0-9]:[0-5][0-9]$') &&
+      data.selectedDays is list && data.selectedDays.size() >= 1 && data.selectedDays.size() <= 7 && data.selectedDays[0] is number &&
+      data.intervalType is string && data.intervalType.size() >= 1 && data.intervalType.size() <= 30 &&
+      (data.intervalType == 'weekly' || data.intervalType == 'twice_weekly' || data.intervalType == 'biweekly' || data.intervalType == 'custom_days') &&
+      data.intervalLabel is string && data.intervalLabel.size() >= 1 && data.intervalLabel.size() <= 120 &&
+      data.tuitionPerSession is number && data.tuitionPerSession >= 0 && data.tuitionPerSession <= 100000000 &&
+      data.sessionsLeft is number && data.sessionsLeft >= -500 && data.sessionsLeft <= 1000 &&
+      data.totalSessionsPaid is number && data.totalSessionsPaid >= 0 && data.totalSessionsPaid <= 5000 &&
+      data.totalAttended is number && data.totalAttended >= 0 && data.totalAttended <= 5000 &&
+      data.teacherId is string && data.teacherId.size() >= 1 && data.teacherId.size() <= 128 && data.teacherId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.teacherId == request.auth.uid &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidClassSession(data) {
+      return data.keys().hasAll([
+        'studentId', 'studentName', 'studentPhone', 'subject',
+        'jalaliDate', 'time', 'attendanceStatus', 'grade',
+        'topic', 'teacherNote', 'teacherId', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'studentId', 'studentName', 'studentPhone', 'subject',
+        'jalaliDate', 'time', 'attendanceStatus', 'grade',
+        'topic', 'teacherNote', 'teacherId', 'createdAt', 'updatedAt'
+      ]) &&
+      data.studentId is string && data.studentId.size() >= 1 && data.studentId.size() <= 128 && data.studentId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 100 &&
+      data.studentPhone is string && data.studentPhone.size() >= 10 && data.studentPhone.size() <= 15 && data.studentPhone.matches('^09[0-9]{9}$') &&
+      data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 100 &&
+      data.jalaliDate is string && data.jalaliDate.size() >= 8 && data.jalaliDate.size() <= 20 &&
+      data.time is string && data.time.size() >= 4 && data.time.size() <= 10 && data.time.matches('^[0-2][0-9]:[0-5][0-9]$') &&
+      data.attendanceStatus is string && data.attendanceStatus.size() >= 1 && data.attendanceStatus.size() <= 20 &&
+      (data.attendanceStatus == 'scheduled' || data.attendanceStatus == 'present' || data.attendanceStatus == 'absent_charged' || data.attendanceStatus == 'absent' || data.attendanceStatus == 'excused') &&
+      data.grade is number && data.grade >= -1 && data.grade <= 20 &&
+      data.topic is string && data.topic.size() <= 300 &&
+      data.teacherNote is string && data.teacherNote.size() <= 500 &&
+      data.teacherId is string && data.teacherId.size() >= 1 && data.teacherId.size() <= 128 && data.teacherId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.teacherId == request.auth.uid &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidRechargeRequest(data) {
+      return data.keys().hasAll([
+        'studentId', 'studentName', 'studentPhone', 'requestedSessions',
+        'totalAmount', 'paymentNote', 'status', 'teacherId', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'studentId', 'studentName', 'studentPhone', 'requestedSessions',
+        'totalAmount', 'paymentNote', 'status', 'teacherId', 'createdAt', 'updatedAt'
+      ]) &&
+      data.studentId is string && data.studentId.size() >= 1 && data.studentId.size() <= 128 && data.studentId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 100 &&
+      data.studentPhone is string && data.studentPhone.size() >= 10 && data.studentPhone.size() <= 15 && data.studentPhone.matches('^09[0-9]{9}$') &&
+      data.requestedSessions is number && data.requestedSessions >= 1 && data.requestedSessions <= 100 &&
+      data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 500000000 &&
+      data.paymentNote is string && data.paymentNote.size() <= 300 &&
+      data.status is string && data.status.size() >= 1 && data.status.size() <= 20 &&
+      (data.status == 'pending' || data.status == 'approved' || data.status == 'rejected') &&
+      data.teacherId is string && data.teacherId.size() >= 1 && data.teacherId.size() <= 128 && data.teacherId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.teacherId == request.auth.uid &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    function isValidChatMessage(data) {
+      return data.keys().hasAll([
+        'studentId', 'studentName', 'senderRole', 'senderName',
+        'text', 'jalaliTime', 'teacherId', 'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'studentId', 'studentName', 'senderRole', 'senderName',
+        'text', 'jalaliTime', 'teacherId', 'createdAt'
+      ]) &&
+      data.studentId is string && data.studentId.size() >= 1 && data.studentId.size() <= 128 && data.studentId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.studentName is string && data.studentName.size() >= 1 && data.studentName.size() <= 100 &&
+      data.senderRole is string && data.senderRole.size() >= 1 && data.senderRole.size() <= 20 &&
+      (data.senderRole == 'teacher' || data.senderRole == 'student') &&
+      data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 100 &&
+      data.text is string && data.text.size() >= 1 && data.text.size() <= 1000 &&
+      data.jalaliTime is string && data.jalaliTime.size() >= 1 && data.jalaliTime.size() <= 40 &&
+      data.teacherId is string && data.teacherId.size() >= 1 && data.teacherId.size() <= 128 && data.teacherId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.teacherId == request.auth.uid &&
+      data.createdAt is timestamp;
+    }
+
+    function isValidAppNotification(data) {
+      return data.keys().hasAll([
+        'targetRole', 'targetStudentId', 'type', 'title',
+        'body', 'jalaliTime', 'isRead', 'teacherId', 'createdAt', 'updatedAt'
+      ]) &&
+      data.keys().hasOnly([
+        'targetRole', 'targetStudentId', 'type', 'title',
+        'body', 'jalaliTime', 'isRead', 'teacherId', 'createdAt', 'updatedAt'
+      ]) &&
+      data.targetRole is string && data.targetRole.size() >= 1 && data.targetRole.size() <= 20 &&
+      (data.targetRole == 'teacher' || data.targetRole == 'student') &&
+      data.targetStudentId is string && data.targetStudentId.size() <= 128 &&
+      data.type is string && data.type.size() >= 1 && data.type.size() <= 40 &&
+      (
+        data.type == 'session_reminder' ||
+        data.type == 'payment_approved' ||
+        data.type == 'payment_rejected' ||
+        data.type == 'recharge_requested' ||
+        data.type == 'grade_posted' ||
+        data.type == 'new_message'
+      ) &&
+      data.title is string && data.title.size() >= 1 && data.title.size() <= 150 &&
+      data.body is string && data.body.size() >= 1 && data.body.size() <= 400 &&
+      data.jalaliTime is string && data.jalaliTime.size() >= 1 && data.jalaliTime.size() <= 40 &&
+      data.isRead is bool &&
+      data.teacherId is string && data.teacherId.size() >= 1 && data.teacherId.size() <= 128 && data.teacherId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.teacherId == request.auth.uid &&
+      data.createdAt is timestamp &&
+      data.updatedAt is timestamp;
+    }
+
+    // =========================================================================
+    // Collection Rules
+    // =========================================================================
+
+    match /admins/{adminId} {
+      allow get: if isVerified() && isValidId(adminId) && (request.auth.uid == adminId || isAdmin());
+      allow list, create, update, delete: if false;
+    }
+
+    match /students/{studentId} {
+      allow get: if isVerified() && isValidId(studentId) && (existing().teacherId == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.teacherId == request.auth.uid || isAdmin());
+
+      allow create: if isVerified() &&
+        isValidId(studentId) &&
+        isValidStudent(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isVerified() &&
+        isValidId(studentId) &&
+        isValidStudent(incoming()) &&
+        incoming().teacherId == existing().teacherId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (
+            existing().teacherId == request.auth.uid &&
+            (
+              // Action 1: Recharge sessions or update attendance count (supports negative credit balances)
+              incoming().diff(existing()).affectedKeys().hasOnly(['sessionsLeft', 'totalSessionsPaid', 'totalAttended', 'updatedAt']) ||
+              // Action 2: Edit student profile, password, selected weekdays, or tuition
+              incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'password', 'subject', 'startDate', 'classTime', 'selectedDays', 'intervalType', 'intervalLabel', 'tuitionPerSession', 'sessionsLeft', 'totalSessionsPaid', 'totalAttended', 'updatedAt'])
+            )
+          )
+        );
+
+      allow delete: if isVerified() && isValidId(studentId) && (existing().teacherId == request.auth.uid || isAdmin());
+    }
+
+    match /sessions/{sessionId} {
+      allow get: if isVerified() && isValidId(sessionId) && (existing().teacherId == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.teacherId == request.auth.uid || isAdmin());
+
+      allow create: if isVerified() &&
+        isValidId(sessionId) &&
+        isValidClassSession(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/students/$(incoming().studentId)) &&
+        get(/databases/$(database)/documents/students/$(incoming().studentId)).data.teacherId == request.auth.uid;
+
+      allow update: if isVerified() &&
+        isValidId(sessionId) &&
+        isValidClassSession(incoming()) &&
+        incoming().teacherId == existing().teacherId &&
+        incoming().studentId == existing().studentId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (
+            existing().teacherId == request.auth.uid &&
+            (
+              // Action 1: Record attendance, grade, and session notes
+              incoming().diff(existing()).affectedKeys().hasOnly(['attendanceStatus', 'grade', 'topic', 'teacherNote', 'updatedAt']) ||
+              // Action 2: Reschedule date or time
+              incoming().diff(existing()).affectedKeys().hasOnly(['jalaliDate', 'time', 'attendanceStatus', 'grade', 'topic', 'teacherNote', 'updatedAt'])
+            )
+          )
+        );
+
+      allow delete: if isVerified() && isValidId(sessionId) && (existing().teacherId == request.auth.uid || isAdmin());
+    }
+
+    match /rechargeRequests/{requestId} {
+      allow get: if isVerified() && isValidId(requestId) && (existing().teacherId == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.teacherId == request.auth.uid || isAdmin());
+
+      allow create: if isVerified() &&
+        isValidId(requestId) &&
+        isValidRechargeRequest(incoming()) &&
+        incoming().status == 'pending' &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/students/$(incoming().studentId)) &&
+        get(/databases/$(database)/documents/students/$(incoming().studentId)).data.teacherId == request.auth.uid;
+
+      allow update: if isVerified() &&
+        isValidId(requestId) &&
+        isValidRechargeRequest(incoming()) &&
+        incoming().teacherId == existing().teacherId &&
+        incoming().studentId == existing().studentId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (
+            // Terminal State Locking: Only pending requests can transition to approved or rejected
+            existing().teacherId == request.auth.uid &&
+            existing().status == 'pending' &&
+            (incoming().status == 'approved' || incoming().status == 'rejected') &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'paymentNote', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isVerified() && isValidId(requestId) && (existing().teacherId == request.auth.uid || isAdmin());
+    }
+
+    match /messages/{messageId} {
+      allow get: if isVerified() && isValidId(messageId) && (existing().teacherId == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.teacherId == request.auth.uid || isAdmin());
+
+      allow create: if isVerified() &&
+        isValidId(messageId) &&
+        isValidChatMessage(incoming()) &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/students/$(incoming().studentId)) &&
+        get(/databases/$(database)/documents/students/$(incoming().studentId)).data.teacherId == request.auth.uid;
+
+      allow update: if false;
+      allow delete: if isVerified() && isValidId(messageId) && (existing().teacherId == request.auth.uid || isAdmin());
+    }
+
+    match /notifications/{notificationId} {
+      allow get: if isVerified() && isValidId(notificationId) && (existing().teacherId == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.teacherId == request.auth.uid || isAdmin());
+
+      allow create: if isVerified() &&
+        isValidId(notificationId) &&
+        isValidAppNotification(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isVerified() &&
+        isValidId(notificationId) &&
+        isValidAppNotification(incoming()) &&
+        incoming().teacherId == existing().teacherId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (
+            existing().teacherId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['isRead', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isVerified() && isValidId(notificationId) && (existing().teacherId == request.auth.uid || isAdmin());
+    }
+  }
+}

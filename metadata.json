@@ -1,0 +1,6 @@
+{
+  "name": "مکتب‌یار — سامانه مدیریت کلاس‌های خصوصی",
+  "description": "سامانه جامع مدیریت کلاس‌های خصوصی با تقویم شمسی، حضور و غیاب، ثبت نمرات، مدیریت شهریه و شارژ جلسات، اعلان آنی و گفتگوی مستقیم استاد و دانش‌آموز",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
