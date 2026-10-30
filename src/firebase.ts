@@ -1,7 +1,8 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider } from 'firebase/auth';
 import {
-  getFirestore,
+  initializeFirestore,
+  setLogLevel,
   doc,
   getDocFromServer,
   setDoc,
@@ -19,22 +20,38 @@ import type {
   AppNotification,
 } from './types';
 
+// Silence internal @firebase/firestore console.error spam when client networks
+// (e.g., restricted ISPs or proxies) cannot reach firestore.googleapis.com within 10s
+setLogLevel('silent');
+
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = initializeFirestore(
+  app,
+  {
+    experimentalAutoDetectLongPolling: true,
+  },
+  firebaseConfig.firestoreDatabaseId
+);
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
-// Validate connection to Firestore on boot
+// Validate connection to Firestore when authenticated without triggering false console.error alerts on restricted networks
 async function testConnection() {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return;
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
+    if (
+      error instanceof Error &&
+      error.message.includes('the client is offline')
+    ) {
+      console.info(
+        'Firestore is operating in offline/local mode on this network connection.'
+      );
     }
   }
 }
-testConnection();
+void testConnection();
 
 export enum OperationType {
   CREATE = 'create',

@@ -6,14 +6,15 @@ import {VitePWA} from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
   return {
+    base: '/Maktab-Yar/',
     plugins: [
       react(),
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['apple-touch-icon.png', 'icon.svg'],
+        includeAssets: ['apple-touch-icon.png', 'icon.svg', '404.html'],
         manifest: {
-          id: '/',
+          id: '/Maktab-Yar/',
           name: 'مکتب‌یار — سامانه مدیریت کلاس‌های خصوصی',
           short_name: 'مکتب‌یار',
           description:
@@ -23,23 +24,23 @@ export default defineConfig(() => {
           display: 'standalone',
           dir: 'rtl',
           lang: 'fa',
-          start_url: '/',
-          scope: '/',
+          start_url: '/Maktab-Yar/',
+          scope: '/Maktab-Yar/',
           icons: [
             {
-              src: '/pwa-192x192.png',
+              src: '/Maktab-Yar/pwa-192x192.png',
               sizes: '192x192',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-512x512.png',
+              src: '/Maktab-Yar/pwa-512x512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'any',
             },
             {
-              src: '/pwa-maskable-512x512.png',
+              src: '/Maktab-Yar/pwa-maskable-512x512.png',
               sizes: '512x512',
               type: 'image/png',
               purpose: 'maskable',
@@ -81,8 +82,7 @@ export default defineConfig(() => {
           ],
         },
         devOptions: {
-          enabled: true,
-          type: 'module',
+          enabled: false,
         },
       }),
     ],
@@ -92,6 +92,7 @@ export default defineConfig(() => {
       },
     },
     server: {
+      allowedHosts: true as const,
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',

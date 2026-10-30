@@ -36,20 +36,42 @@ export interface TeacherAccountConfig {
   id: string;
   name: string;
   username: string;
-  password: string;
+  passwordSha256: string;
+  envPasswordKey: string;
   phoneDisplay: string;
   phoneNormalized: string;
 }
 
-// Multi-Teacher Configuration:
-// 1. استاد فریبرز فرزاد (fariborz_farzad / #New123inhere987)
-// 2. استاد رمی (Ramy / $passWord4567)
+const PASSWORD_HASH_SALT = 'maktabyar_salt_v1:';
+
+function hashPasswordWithSalt(plain: string): string {
+  return crypto
+    .createHash('sha256')
+    .update(`${PASSWORD_HASH_SALT}${plain}`)
+    .digest('hex');
+}
+
+function verifyTeacherPassword(
+  teacher: TeacherAccountConfig,
+  candidatePassword: string
+): boolean {
+  const envOverride = process.env[teacher.envPasswordKey];
+  if (envOverride && envOverride.trim().length > 0) {
+    return candidatePassword === envOverride.trim();
+  }
+  const candidateHash = hashPasswordWithSalt(candidatePassword);
+  return candidateHash === teacher.passwordSha256;
+}
+
+// Multi-Teacher Configuration (Salted SHA-256 hashes — no plaintext passwords in source code)
 const TEACHERS_CONFIG: TeacherAccountConfig[] = [
   {
     id: 'teacher_admin_fariborz_farzad',
     name: 'استاد فریبرز فرزاد',
     username: 'fariborz_farzad',
-    password: '#New123inhere987',
+    passwordSha256:
+      'ab74dac946b537ba056c0021ef259da5eac4d8dd141a2ab9b70e5d7289f2da65',
+    envPasswordKey: 'TEACHER_FARIBORZ_PASSWORD',
     phoneDisplay: '+98 9373796964',
     phoneNormalized: '09373796964',
   },
@@ -57,7 +79,9 @@ const TEACHERS_CONFIG: TeacherAccountConfig[] = [
     id: 'teacher_ramy',
     name: 'استاد رمی',
     username: 'Ramy',
-    password: '$passWord4567',
+    passwordSha256:
+      'b9d8bc1aebe72faa735f3452d4a0fe6e81b96592d7961ad4737732337aab168c',
+    envPasswordKey: 'TEACHER_RAMY_PASSWORD',
     phoneDisplay: '+98 9124567000',
     phoneNormalized: '09124567000',
   },
@@ -905,7 +929,20 @@ interface AuthSession {
 async function startServer() {
   const app = express();
   const server = http.createServer(app);
-  const wss = new WebSocketServer({ server, path: '/ws' });
+  const wss = new WebSocketServer({ noServer: true });
+
+  server.on('upgrade', (req, socket, head) => {
+    try {
+      const urlObj = new URL(req.url || '/', 'http://localhost:3000');
+      if (urlObj.pathname === '/ws') {
+        wss.handleUpgrade(req, socket, head, (ws) => {
+          wss.emit('connection', ws, req);
+        });
+      }
+    } catch {
+      socket.destroy();
+    }
+  });
 
   app.use(express.json());
 
@@ -1061,7 +1098,7 @@ async function startServer() {
       (t) =>
         (t.username === username ||
           t.username.toLowerCase() === username.toLowerCase()) &&
-        t.password === password
+        verifyTeacherPassword(t, password)
     );
 
     if (!matchedTeacher) {
@@ -2148,14 +2185,59 @@ async function startServer() {
     res.json({ notification: notif });
   });
 
+  app.get('/manifest.webmanifest', (_req, res) => {
+    res.setHeader('Content-Type', 'application/manifest+json');
+    res.json({
+      id: '/',
+      name: 'مکتب‌یار — سامانه مدیریت کلاس‌های خصوصی',
+      short_name: 'مکتب‌یار',
+      description:
+        'سامانه جامع مدیریت کلاس‌های خصوصی با تقویم شمسی، حضور و غیاب، ثبت نمرات، مدیریت شهریه و شارژ جلسات',
+      theme_color: '#f7f7f4',
+      background_color: '#f7f7f4',
+      display: 'standalone',
+      dir: 'rtl',
+      lang: 'fa',
+      start_url: '/',
+      scope: '/',
+      icons: [
+        {
+          src: '/pwa-192x192.png',
+          sizes: '192x192',
+          type: 'image/png',
+          purpose: 'any',
+        },
+        {
+          src: '/pwa-512x512.png',
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'any',
+        },
+        {
+          src: '/pwa-maskable-512x512.png',
+          sizes: '512x512',
+          type: 'image/png',
+          purpose: 'maskable',
+        },
+      ],
+    });
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      base: '/',
+      server: {
+        middlewareMode: true,
+        allowedHosts: true,
+        ws: { server },
+      },
       appType: 'spa',
     });
+    app.use('/Maktab-Yar', vite.middlewares);
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(__dirname, 'dist');
+    app.use('/Maktab-Yar', express.static(distPath));
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));

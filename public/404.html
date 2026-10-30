@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>مکتب‌یار — در حال انتقال به صفحه اصلی...</title>
+    <script type="text/javascript">
+      // Single Page Apps for GitHub Pages (SPA Redirect to index.html)
+      // Keeps 1 path segment ('/Maktab-Yar') for repository-hosted GitHub Pages
+      (function () {
+        var l = window.location;
+        var isProjectPage = l.pathname.toLowerCase().indexOf('/maktab-yar') === 0;
+        var pathSegmentsToKeep = isProjectPage ? 1 : 0;
+
+        var basePath = l.pathname
+          .split('/')
+          .slice(0, 1 + pathSegmentsToKeep)
+          .join('/');
+        var routeRest = l.pathname
+          .slice(1)
+          .split('/')
+          .slice(pathSegmentsToKeep)
+          .join('/')
+          .replace(/&/g, '~and~');
+        var queryRest = l.search
+          ? '&' + l.search.slice(1).replace(/&/g, '~and~')
+          : '';
+
+        var targetUrl =
+          l.protocol +
+          '//' +
+          l.hostname +
+          (l.port ? ':' + l.port : '') +
+          basePath +
+          '/?/' +
+          routeRest +
+          queryRest +
+          l.hash;
+
+        l.replace(targetUrl);
+      })();
+    </script>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background-color: #f7f7f4;
+        color: #26251e;
+        font-family: 'Vazirmatn', system-ui, -apple-system, sans-serif;
+        padding: 24px;
+        text-align: center;
+      }
+      .card {
+        max-width: 420px;
+        width: 100%;
+        background: #ffffff;
+        border: 1px solid #e6e5e0;
+        border-radius: 12px;
+        padding: 28px 24px;
+      }
+      .brand {
+        color: #f54e00;
+        font-size: 20px;
+        font-weight: 700;
+        margin-bottom: 8px;
+      }
+      .desc {
+        color: #5a5852;
+        font-size: 14px;
+        line-height: 1.7;
+        margin-bottom: 20px;
+      }
+      .btn {
+        display: inline-block;
+        background-color: #f54e00;
+        color: #ffffff;
+        text-decoration: none;
+        padding: 10px 20px;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="brand">مکتب‌یار</div>
+      <div class="desc">
+        در حال هدایت خودکار به صفحه اصلی سامانه مدیریت کلاس‌های خصوصی...
+      </div>
+      <a class="btn" href="/Maktab-Yar/">ورود به صفحه اصلی مکتب‌یار</a>
+    </div>
+  </body>
+</html>

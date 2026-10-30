@@ -98,6 +98,20 @@ export default function App() {
   useEffect(() => {
     if (!activeToken) return;
 
+    const handleStaticSync = (e: Event) => {
+      const customEvent = e as CustomEvent<ServerStateSnapshot>;
+      if (customEvent.detail) {
+        applySnapshot(customEvent.detail);
+      }
+    };
+    window.addEventListener('maktabyar:static-sync', handleStaticSync);
+
+    if (window.location.hostname.endsWith('.github.io')) {
+      return () => {
+        window.removeEventListener('maktabyar:static-sync', handleStaticSync);
+      };
+    }
+
     let ws: WebSocket | null = null;
     let reconnectTimer: number | null = null;
     let isUnmounted = false;
@@ -208,9 +222,26 @@ export default function App() {
     connectWs();
 
     return () => {
+      window.removeEventListener('maktabyar:static-sync', handleStaticSync);
       isUnmounted = true;
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
-      if (ws) ws.close();
+      if (ws) {
+        ws.onmessage = null;
+        ws.onclose = null;
+        ws.onerror = null;
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        } else if (ws.readyState === WebSocket.CONNECTING) {
+          const pendingWs = ws;
+          pendingWs.addEventListener(
+            'open',
+            () => {
+              pendingWs.close();
+            },
+            { once: true }
+          );
+        }
+      }
     };
   }, [activeToken, portalMode, applySnapshot]);
 
