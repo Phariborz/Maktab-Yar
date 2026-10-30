@@ -87,6 +87,8 @@ interface TeacherDashboardProps {
       selectedDays: number[];
       tuitionPerSession: number;
       sessionsLeft: number;
+      totalSessionsPaid?: number;
+      totalAttended?: number;
     }
   ) => Promise<void>;
   onDirectRechargeStudent: (
@@ -102,6 +104,8 @@ interface TeacherDashboardProps {
     time: string;
     topic: string;
     teacherNote: string;
+    attendanceStatus?: AttendanceStatus;
+    grade?: number;
   }) => Promise<void>;
   onUpdateSession: (
     sessionId: string,
@@ -180,7 +184,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [stuTime, setStuTime] = useState('17:00');
   const [stuSelectedDays, setStuSelectedDays] = useState<number[]>([0, 3]); // شنبه و سه‌شنبه
   const [stuTuition, setStuTuition] = useState(600000);
-  const [stuInitialSessions, setStuInitialSessions] = useState(6);
+  const [stuInitialSessions, setStuInitialSessions] = useState(5);
   const [studentFormMsg, setStudentFormMsg] = useState<{
     type: 'success' | 'error';
     text: string;
@@ -198,6 +202,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [editStuSelectedDays, setEditStuSelectedDays] = useState<number[]>([0]);
   const [editStuTuition, setEditStuTuition] = useState(600000);
   const [editStuSessionsLeft, setEditStuSessionsLeft] = useState(0);
+  const [editStuTotalPaid, setEditStuTotalPaid] = useState(0);
+  const [editStuTotalAttended, setEditStuTotalAttended] = useState(0);
   const [editStudentMsg, setEditStudentMsg] = useState<{
     type: 'success' | 'error';
     text: string;
@@ -218,6 +224,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [newSessTime, setNewSessTime] = useState('17:00');
   const [newSessTopic, setNewSessTopic] = useState('');
   const [newSessNote, setNewSessNote] = useState('');
+  const [newSessStatus, setNewSessStatus] = useState<AttendanceStatus>('scheduled');
 
   // Attendance & Grade editing state
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -479,6 +486,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     );
     setEditStuTuition(stu.tuitionPerSession);
     setEditStuSessionsLeft(stu.sessionsLeft);
+    setEditStuTotalPaid(
+      stu.totalSessionsPaid !== undefined
+        ? stu.totalSessionsPaid
+        : stu.totalAttended + stu.sessionsLeft
+    );
+    setEditStuTotalAttended(stu.totalAttended);
     setEditStudentMsg(null);
   };
 
@@ -498,6 +511,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         selectedDays: sanitizeSelectedDays(editStuSelectedDays),
         tuitionPerSession: Number(editStuTuition) || 0,
         sessionsLeft: Number(editStuSessionsLeft),
+        totalSessionsPaid: Number(editStuTotalPaid),
+        totalAttended: Number(editStuTotalAttended),
       });
       setEditingStudent(null);
     } catch (err) {
@@ -510,6 +525,33 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       });
     } finally {
       setSavingStudentEdit(false);
+    }
+  };
+
+  const handleQuickRecordPresentSession = async (stu: Student) => {
+    // Check if there is an existing scheduled session for this student; if so, mark the earliest one present.
+    // Otherwise, create a new 'present' session on today's date, immediately deducting 1 session (going negative if <= 0).
+    const nextScheduled = sessions
+      .filter((s) => s.studentId === stu.id && s.attendanceStatus === 'scheduled')
+      .sort((a, b) => a.jalaliDate.localeCompare(b.jalaliDate))[0];
+
+    if (nextScheduled) {
+      await onUpdateSession(nextScheduled.id, {
+        attendanceStatus: 'present',
+        grade: nextScheduled.grade >= 0 ? nextScheduled.grade : -1,
+        topic: nextScheduled.topic || `جلسه آموزشی ${stu.subject}`,
+        teacherNote: nextScheduled.teacherNote || 'ثبت حضور جلسه',
+      });
+    } else {
+      await onAddSession({
+        studentId: stu.id,
+        jalaliDate: today.formatted,
+        time: stu.classTime || '17:00',
+        topic: `جلسه شماره ${toPersianDigits(stu.totalAttended + 1)} — ${stu.subject}`,
+        teacherNote: 'ثبت حضور جلسه جدید',
+        attendanceStatus: 'present',
+        grade: -1,
+      });
     }
   };
 
@@ -564,10 +606,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
       time: toEnglishDigits(newSessTime).trim(),
       topic: newSessTopic.trim(),
       teacherNote: newSessNote.trim(),
+      attendanceStatus: newSessStatus,
     });
     setShowNewSessionForm(false);
     setNewSessTopic('');
     setNewSessNote('');
+    setNewSessStatus('scheduled');
   };
 
   const handleSendTeacherChat = async (e: React.FormEvent) => {
@@ -881,7 +925,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           </div>
           <form
             onSubmit={handleCreateCustomSession}
-            className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5 sm:gap-4 items-end"
+            className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-3.5 sm:gap-4 items-end"
           >
             <div>
               <label className="block text-[13px] font-semibold text-[#26251e] mb-1.5">
@@ -927,6 +971,21 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             </div>
             <div>
               <label className="block text-[13px] font-semibold text-[#26251e] mb-1.5">
+                وضعیت حضور جلسه
+              </label>
+              <select
+                value={newSessStatus}
+                onChange={(e) => setNewSessStatus(e.target.value as AttendanceStatus)}
+                className="w-full min-h-[44px] px-3 text-[14px] sm:text-[13px] border border-[#cfcdc4] rounded-[8px] bg-[#ffffff] text-[#26251e]"
+              >
+                <option value="scheduled">در انتظار برگزاری</option>
+                <option value="present">حاضر — برگزارشده (کسر ۱ جلسه)</option>
+                <option value="absent_charged">غیبت با کسر جلسه (-۱)</option>
+                <option value="excused">غیبت موجه (بدون کسر)</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-[13px] font-semibold text-[#26251e] mb-1.5">
                 مبحث آموزشی جلسه
               </label>
               <input
@@ -943,7 +1002,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                 type="submit"
                 className="w-full min-h-[44px] px-4 bg-[#f54e00] hover:bg-[#d04200] text-[#ffffff] text-[14px] font-semibold rounded-[8px] transition-colors cursor-pointer"
               >
-                ثبت جلسه و ارسال اعلان
+                ثبت جلسه و اعمال تراز
               </button>
             </div>
           </form>
@@ -1484,22 +1543,97 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       required
                     />
                   </div>
+                </div>
 
-                  <div>
-                    <label className="block text-[13px] font-semibold text-[#26251e] mb-1">
-                      تراز جلسات (مثبت یا منفی)
-                    </label>
-                    <input
-                      type="number"
-                      min={-500}
-                      max={1000}
-                      value={editStuSessionsLeft}
-                      onChange={(e) =>
-                        setEditStuSessionsLeft(Number(e.target.value))
-                      }
-                      className="w-full min-h-[44px] px-3.5 text-[16px] sm:text-[14px] font-mono-code border border-[#cfcdc4] rounded-[8px]"
-                      required
-                    />
+                {/* Accounting & Session Balance Reconciliation Box */}
+                <div className="p-3.5 sm:p-4 rounded-[10px] bg-[#fafaf7] border border-[#cfcdc4] space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[13px] font-semibold text-[#26251e]">
+                      تنظیم دقیق جلسات پرداخت‌شده، برگزارشده و بدهی دانش‌آموز
+                    </span>
+                    <span
+                      className={`text-[12px] font-mono-code font-semibold px-2.5 py-1 rounded-[6px] ${
+                        editStuSessionsLeft < 0
+                          ? 'bg-[#cf2d56]/10 text-[#cf2d56] border border-[#cf2d56]/30'
+                          : editStuSessionsLeft === 0
+                          ? 'bg-[#c08532]/10 text-[#c08532] border border-[#c08532]/30'
+                          : 'bg-[#1f8a65]/10 text-[#1f8a65] border border-[#1f8a65]/30'
+                      }`}
+                    >
+                      {editStuSessionsLeft < 0
+                        ? `وضعیت: ${formatSignedPersianNumber(editStuSessionsLeft)} جلسه (بدهکار — ${formatToman(Math.abs(editStuSessionsLeft) * editStuTuition)})`
+                        : editStuSessionsLeft === 0
+                        ? 'وضعیت: ۰ جلسه باقی‌مانده (اتمام اعتبار)'
+                        : `وضعیت: ${toPersianDigits(editStuSessionsLeft)} جلسه اعتبار باقی‌مانده`}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+                    <div>
+                      <label className="block text-[12px] font-semibold text-[#26251e] mb-1">
+                        کل جلسات پرداخت‌شده تاکنون
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={1000}
+                        value={editStuTotalPaid}
+                        onChange={(e) => {
+                          const newPaid = Number(e.target.value);
+                          setEditStuTotalPaid(newPaid);
+                          setEditStuSessionsLeft(newPaid - editStuTotalAttended);
+                        }}
+                        className="w-full min-h-[44px] px-3.5 text-[16px] sm:text-[14px] font-mono-code bg-[#ffffff] border border-[#cfcdc4] rounded-[8px]"
+                        required
+                      />
+                      <span className="block text-[11px] text-[#807d72] mt-1">
+                        مثال: اگر ۵ جلسه پرداخت کرده و ۶ جلسه آمده، تراز ۱- (بدهکار) می‌شود.
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block text-[12px] font-semibold text-[#26251e] mb-1">
+                        جلسات برگزارشده (حاضر)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={1000}
+                        value={editStuTotalAttended}
+                        onChange={(e) => {
+                          const newAttended = Number(e.target.value);
+                          setEditStuTotalAttended(newAttended);
+                          setEditStuSessionsLeft(editStuTotalPaid - newAttended);
+                        }}
+                        className="w-full min-h-[44px] px-3.5 text-[16px] sm:text-[14px] font-mono-code bg-[#ffffff] border border-[#cfcdc4] rounded-[8px]"
+                        required
+                      />
+                      <span className="block text-[11px] text-[#807d72] mt-1">
+                        تعداد کل جلساتی که دانش‌آموز تا امروز شرکت کرده است.
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block text-[12px] font-semibold text-[#26251e] mb-1">
+                        تراز جلسات فعلی (مثبت یا منفی)
+                      </label>
+                      <input
+                        type="number"
+                        min={-500}
+                        max={1000}
+                        value={editStuSessionsLeft}
+                        onChange={(e) => {
+                          const newLeft = Number(e.target.value);
+                          setEditStuSessionsLeft(newLeft);
+                          setEditStuTotalPaid(editStuTotalAttended + newLeft);
+                        }}
+                        className="w-full min-h-[44px] px-3.5 text-[16px] sm:text-[14px] font-mono-code bg-[#ffffff] border border-[#cfcdc4] rounded-[8px]"
+                        required
+                      />
+                      <span className="block text-[11px] text-[#807d72] mt-1">
+                        عدد منفی (مثلاً -1) یعنی دانش‌آموز بدهکار است.
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -1949,6 +2083,10 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   {filteredStudentsList.map((stu) => {
                     const isNegative = stu.sessionsLeft < 0;
                     const isExpanded = expandedStudentCardId === stu.id;
+                    const totalPaidCount =
+                      stu.totalSessionsPaid !== undefined
+                        ? stu.totalSessionsPaid
+                        : stu.totalAttended + stu.sessionsLeft;
                     return (
                       <div key={stu.id} className="p-4 space-y-3">
                         <div className="flex items-start justify-between gap-2">
@@ -1963,25 +2101,44 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
                           <div className="text-left font-mono-code">
                             {isNegative ? (
-                              <span className="text-[14px] font-semibold text-[#cf2d56]">
-                                {formatSignedPersianNumber(stu.sessionsLeft)} جلسه (بدهکار)
-                              </span>
+                              <div>
+                                <span className="text-[14px] font-semibold text-[#cf2d56] block">
+                                  {formatSignedPersianNumber(stu.sessionsLeft)} جلسه (بدهکار)
+                                </span>
+                                <span className="text-[11px] text-[#cf2d56] block">
+                                  بدهی: {formatToman(Math.abs(stu.sessionsLeft) * stu.tuitionPerSession)}
+                                </span>
+                              </div>
                             ) : (
-                              <span
-                                className={`text-[14px] font-semibold ${
-                                  stu.sessionsLeft <= 1
-                                    ? 'text-[#c08532]'
-                                    : 'text-[#1f8a65]'
-                                }`}
-                              >
-                                {toPersianDigits(stu.sessionsLeft)} جلسه اعتبار
-                              </span>
+                              <div>
+                                <span
+                                  className={`text-[14px] font-semibold block ${
+                                    stu.sessionsLeft <= 1
+                                      ? 'text-[#c08532]'
+                                      : 'text-[#1f8a65]'
+                                  }`}
+                                >
+                                  {toPersianDigits(stu.sessionsLeft)} جلسه باقی‌مانده
+                                </span>
+                              </div>
                             )}
+                            <span className="text-[11px] text-[#807d72] block mt-0.5">
+                              پرداخت‌شده: {toPersianDigits(totalPaidCount)} · برگزارشده: {toPersianDigits(stu.totalAttended)}
+                            </span>
                           </div>
                         </div>
 
                         {/* Primary Touch Actions in Thumb Zone */}
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleQuickRecordPresentSession(stu)}
+                            className="flex-1 min-h-[44px] px-2.5 bg-[#1f8a65] hover:bg-[#176e4f] text-[#ffffff] text-[12px] font-semibold rounded-[8px] flex items-center justify-center gap-1 cursor-pointer"
+                            title="ثبت حضور یک جلسه جدید و کسر ۱ جلسه از تراز"
+                          >
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            <span>ثبت حضور جلسه (-۱)</span>
+                          </button>
                           <button
                             type="button"
                             onClick={() => {
@@ -1993,15 +2150,15 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                   : 4
                               );
                             }}
-                            className="flex-1 min-h-[44px] px-3 bg-[#26251e] text-[#f7f7f4] text-[13px] font-semibold rounded-[8px] flex items-center justify-center gap-1.5 cursor-pointer"
+                            className="min-h-[44px] px-3 bg-[#26251e] text-[#f7f7f4] text-[12px] font-semibold rounded-[8px] flex items-center justify-center gap-1 cursor-pointer"
                           >
                             <RefreshCw className="w-3.5 h-3.5" />
-                            <span>شارژ جلسات</span>
+                            <span>شارژ</span>
                           </button>
                           <button
                             type="button"
                             onClick={() => handleOpenEditStudentModal(stu)}
-                            className="min-h-[44px] px-3.5 bg-[#fafaf7] border border-[#cfcdc4] text-[#26251e] text-[13px] font-semibold rounded-[8px] flex items-center justify-center gap-1 cursor-pointer"
+                            className="min-h-[44px] px-3 bg-[#fafaf7] border border-[#cfcdc4] text-[#26251e] text-[12px] font-semibold rounded-[8px] flex items-center justify-center gap-1 cursor-pointer"
                           >
                             <Edit3 className="w-3.5 h-3.5 text-[#f54e00]" />
                             <span>ویرایش</span>
@@ -2011,7 +2168,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                             onClick={() =>
                               setExpandedStudentCardId(isExpanded ? null : stu.id)
                             }
-                            className="min-h-[44px] px-3 border border-[#e6e5e0] text-[#5a5852] text-[12px] font-medium rounded-[8px] flex items-center gap-1 cursor-pointer"
+                            className="min-h-[44px] px-2.5 border border-[#e6e5e0] text-[#5a5852] text-[12px] font-medium rounded-[8px] flex items-center gap-1 cursor-pointer"
                           >
                             <span>جزئیات</span>
                             {isExpanded ? (
@@ -2082,6 +2239,10 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     <tbody className="divide-y divide-[#efeee8] text-[14px]">
                       {filteredStudentsList.map((stu) => {
                         const isNegative = stu.sessionsLeft < 0;
+                        const totalPaidCount =
+                          stu.totalSessionsPaid !== undefined
+                            ? stu.totalSessionsPaid
+                            : stu.totalAttended + stu.sessionsLeft;
                         return (
                           <tr
                             key={stu.id}
@@ -2130,6 +2291,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                         stu.tuitionPerSession
                                     )}
                                   </div>
+                                  <div className="text-[11px] text-[#807d72] mt-0.5">
+                                    پرداخت‌شده: {toPersianDigits(totalPaidCount)} جلسه · برگزارشده: {toPersianDigits(stu.totalAttended)} جلسه
+                                  </div>
                                 </div>
                               ) : (
                                 <div>
@@ -2143,13 +2307,22 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                     {toPersianDigits(stu.sessionsLeft)} جلسه باقی‌مانده
                                   </div>
                                   <div className="text-[12px] text-[#807d72]">
-                                    برگزارشده: {toPersianDigits(stu.totalAttended)} جلسه
+                                    پرداخت‌شده: {toPersianDigits(totalPaidCount)} جلسه · برگزارشده: {toPersianDigits(stu.totalAttended)} جلسه
                                   </div>
                                 </div>
                               )}
                             </td>
                             <td className="py-3.5 px-4 whitespace-nowrap">
                               <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => handleQuickRecordPresentSession(stu)}
+                                  className="px-2.5 py-1.5 bg-[#1f8a65] hover:bg-[#176e4f] text-[#ffffff] text-[12px] font-medium rounded-[6px] transition-colors flex items-center gap-1 cursor-pointer"
+                                  title="ثبت حضور یک جلسه جدید و کسر ۱ جلسه از اعتبار (در صورت صفر بودن تراز، بدهکار می‌شود)"
+                                >
+                                  <CheckCircle2 className="w-3 h-3" />
+                                  <span>+ ثبت حضور (-۱)</span>
+                                </button>
                                 <button
                                   type="button"
                                   onClick={() => handleOpenEditStudentModal(stu)}

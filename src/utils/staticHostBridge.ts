@@ -492,8 +492,18 @@ async function handleStaticApiRequest(
     }
     if (bodyObj.tuitionPerSession !== undefined)
       stu.tuitionPerSession = Number(bodyObj.tuitionPerSession);
-    if (bodyObj.sessionsLeft !== undefined)
+    if (bodyObj.totalSessionsPaid !== undefined)
+      stu.totalSessionsPaid = Math.max(0, Number(bodyObj.totalSessionsPaid));
+    if (bodyObj.totalAttended !== undefined)
+      stu.totalAttended = Math.max(0, Number(bodyObj.totalAttended));
+    if (bodyObj.sessionsLeft !== undefined) {
       stu.sessionsLeft = Number(bodyObj.sessionsLeft);
+    } else if (
+      bodyObj.totalSessionsPaid !== undefined ||
+      bodyObj.totalAttended !== undefined
+    ) {
+      stu.sessionsLeft = stu.totalSessionsPaid - stu.totalAttended;
+    }
     stu.updatedAt = nowIso;
     saveStaticState(state);
     window.dispatchEvent(
@@ -559,6 +569,18 @@ async function handleStaticApiRequest(
   if (path === '/api/sessions' && method === 'POST') {
     const stu = state.students.find((s) => s.id === bodyObj.studentId);
     if (!stu) return jsonResponse({ error: 'دانش‌آموز یافت نشد.' }, 404);
+    const initialStatus =
+      bodyObj.attendanceStatus === 'present' ||
+      bodyObj.attendanceStatus === 'absent_charged' ||
+      bodyObj.attendanceStatus === 'absent' ||
+      bodyObj.attendanceStatus === 'excused'
+        ? bodyObj.attendanceStatus
+        : 'scheduled';
+    const parsedGrade =
+      bodyObj.grade !== undefined && !isNaN(Number(bodyObj.grade))
+        ? Math.max(-1, Math.min(20, Number(bodyObj.grade)))
+        : -1;
+
     const sess: ClassSession = {
       id: `sess_${Date.now()}`,
       studentId: stu.id,
@@ -567,8 +589,8 @@ async function handleStaticApiRequest(
       subject: stu.subject,
       jalaliDate: toEnglishDigits(String(bodyObj.jalaliDate || today.formatted)),
       time: toEnglishDigits(String(bodyObj.time || stu.classTime)),
-      attendanceStatus: 'scheduled',
-      grade: -1,
+      attendanceStatus: initialStatus,
+      grade: initialStatus === 'present' ? parsedGrade : -1,
       topic: String(bodyObj.topic || `جلسه آموزشی ${stu.subject}`),
       teacherNote: String(bodyObj.teacherNote || ''),
       teacherId: stu.teacherId,
@@ -576,13 +598,22 @@ async function handleStaticApiRequest(
       updatedAt: nowIso,
     };
     state.sessions.push(sess);
+
+    if (initialStatus === 'present' || initialStatus === 'absent_charged') {
+      stu.sessionsLeft -= 1;
+      if (initialStatus === 'present') {
+        stu.totalAttended += 1;
+      }
+      stu.updatedAt = nowIso;
+    }
+
     saveStaticState(state);
     window.dispatchEvent(
       new CustomEvent('maktabyar:static-sync', {
         detail: filterTeacherSnapshot(state, stu.teacherId),
       })
     );
-    return jsonResponse({ session: sess });
+    return jsonResponse({ session: sess, student: stu });
   }
 
   const sessMatch = path.match(/^\/api\/sessions\/([^/]+)$/);
@@ -599,6 +630,8 @@ async function handleStaticApiRequest(
     sess.updatedAt = nowIso;
 
     const stu = state.students.find((s) => s.id === sess.studentId);
+    let autoCreatedSession: ClassSession | null = null;
+
     if (stu) {
       const wasConsumed =
         prevStatus === 'present' || prevStatus === 'absent_charged';
@@ -611,6 +644,40 @@ async function handleStaticApiRequest(
       else if (prevStatus === 'present' && nextStatus !== 'present')
         stu.totalAttended = Math.max(0, stu.totalAttended - 1);
       stu.updatedAt = nowIso;
+
+      // Auto-schedule next session when 0 scheduled sessions remain
+      const remainingScheduled = state.sessions.filter(
+        (s) => s.studentId === stu.id && s.attendanceStatus === 'scheduled'
+      );
+      if (remainingScheduled.length === 0) {
+        const stuSessions = state.sessions
+          .filter((s) => s.studentId === stu.id)
+          .sort((a, b) => b.jalaliDate.localeCompare(a.jalaliDate));
+        const lastDate = stuSessions[0]?.jalaliDate || today.formatted;
+        const nextDates = generateSessionDatesByWeekdays(
+          addJalaliDays(lastDate, 1),
+          sanitizeSelectedDays(stu.selectedDays),
+          1
+        );
+        const nextDate = nextDates[0] || addJalaliDays(lastDate, 3);
+        autoCreatedSession = {
+          id: `sess_${Date.now()}_auto`,
+          studentId: stu.id,
+          studentName: stu.name,
+          studentPhone: stu.phone,
+          subject: stu.subject,
+          jalaliDate: nextDate,
+          time: stu.classTime,
+          attendanceStatus: 'scheduled',
+          grade: -1,
+          topic: `جلسه ${toPersianDigits(stuSessions.length + 1)} — ${stu.subject}`,
+          teacherNote: '',
+          teacherId: stu.teacherId,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        state.sessions.push(autoCreatedSession);
+      }
     }
     saveStaticState(state);
     window.dispatchEvent(
@@ -618,7 +685,7 @@ async function handleStaticApiRequest(
         detail: filterTeacherSnapshot(state, sess.teacherId),
       })
     );
-    return jsonResponse({ session: sess, student: stu });
+    return jsonResponse({ session: sess, student: stu, autoCreatedSession });
   }
 
   // 7. Recharge Requests

@@ -354,22 +354,43 @@ export default function App() {
       throw new Error(data.error || 'خطا در ثبت دانش‌آموز');
     }
 
+    if (data.student) {
+      setStudents((prev) =>
+        prev.some((s) => s.id === data.student.id)
+          ? prev.map((s) => (s.id === data.student.id ? data.student : s))
+          : [data.student, ...prev]
+      );
+    }
+    if (Array.isArray(data.createdSessions) && data.createdSessions.length > 0) {
+      setSessions((prev) => {
+        const existingIds = new Set(prev.map((s) => s.id));
+        const newOnes = data.createdSessions.filter(
+          (s: ClassSession) => !existingIds.has(s.id)
+        );
+        return [...prev, ...newOnes];
+      });
+    }
+
     if (authReady && firebaseUser) {
-      const firestoreStu = { ...data.student, teacherId: firebaseUser.uid };
-      await syncStudentToFirestore(firestoreStu, true);
-      if (Array.isArray(data.createdSessions)) {
-        for (const sess of data.createdSessions) {
-          await syncSessionToFirestore(
-            { ...sess, teacherId: firebaseUser.uid },
+      try {
+        const firestoreStu = { ...data.student, teacherId: firebaseUser.uid };
+        await syncStudentToFirestore(firestoreStu, true);
+        if (Array.isArray(data.createdSessions)) {
+          for (const sess of data.createdSessions) {
+            await syncSessionToFirestore(
+              { ...sess, teacherId: firebaseUser.uid },
+              true
+            );
+          }
+        }
+        if (data.notification) {
+          await syncNotificationToFirestore(
+            { ...data.notification, teacherId: firebaseUser.uid },
             true
           );
         }
-      }
-      if (data.notification) {
-        await syncNotificationToFirestore(
-          { ...data.notification, teacherId: firebaseUser.uid },
-          true
-        );
+      } catch {
+        // Ignore cloud backup error when document or network is unavailable
       }
     }
   };
@@ -386,6 +407,8 @@ export default function App() {
       selectedDays: number[];
       tuitionPerSession: number;
       sessionsLeft: number;
+      totalSessionsPaid?: number;
+      totalAttended?: number;
     }
   ) => {
     if (!teacherToken) throw new Error('عدم دسترسی استاد.');
@@ -402,11 +425,21 @@ export default function App() {
       throw new Error(data.error || 'خطا در ویرایش اطلاعات دانش‌آموز');
     }
 
-    if (authReady && firebaseUser && data.student) {
-      await syncStudentToFirestore(
-        { ...data.student, teacherId: firebaseUser.uid },
-        false
+    if (data.student) {
+      setStudents((prev) =>
+        prev.map((s) => (s.id === data.student.id ? data.student : s))
       );
+    }
+
+    if (authReady && firebaseUser && data.student) {
+      try {
+        await syncStudentToFirestore(
+          { ...data.student, teacherId: firebaseUser.uid },
+          false
+        );
+      } catch {
+        // Ignore cloud backup error
+      }
     }
   };
 
@@ -430,22 +463,42 @@ export default function App() {
       }),
     });
     const data = await res.json();
-    if (res.ok && authReady && firebaseUser) {
-      await syncStudentToFirestore(
-        { ...data.student, teacherId: firebaseUser.uid },
-        false
-      );
-      if (data.rechargeRecord) {
-        await syncRechargeToFirestore(
-          { ...data.rechargeRecord, teacherId: firebaseUser.uid },
-          true
+    if (res.ok) {
+      if (data.student) {
+        setStudents((prev) =>
+          prev.map((s) => (s.id === data.student.id ? data.student : s))
         );
       }
-      if (data.notification) {
-        await syncNotificationToFirestore(
-          { ...data.notification, teacherId: firebaseUser.uid },
-          true
+      if (data.rechargeRecord) {
+        setRechargeRequests((prev) =>
+          prev.some((r) => r.id === data.rechargeRecord.id)
+            ? prev
+            : [data.rechargeRecord, ...prev]
         );
+      }
+      if (authReady && firebaseUser) {
+        try {
+          if (data.student) {
+            await syncStudentToFirestore(
+              { ...data.student, teacherId: firebaseUser.uid },
+              false
+            );
+          }
+          if (data.rechargeRecord) {
+            await syncRechargeToFirestore(
+              { ...data.rechargeRecord, teacherId: firebaseUser.uid },
+              true
+            );
+          }
+          if (data.notification) {
+            await syncNotificationToFirestore(
+              { ...data.notification, teacherId: firebaseUser.uid },
+              true
+            );
+          }
+        } catch {
+          // Ignore cloud backup error
+        }
       }
     }
   };
@@ -458,8 +511,16 @@ export default function App() {
         Authorization: `Bearer ${teacherToken}`,
       },
     });
-    if (res.ok && authReady && firebaseUser) {
-      await deleteStudentFromFirestore(studentId);
+    if (res.ok) {
+      setStudents((prev) => prev.filter((s) => s.id !== studentId));
+      setSessions((prev) => prev.filter((sess) => sess.studentId !== studentId));
+      if (authReady && firebaseUser) {
+        try {
+          await deleteStudentFromFirestore(studentId);
+        } catch {
+          // Ignore cloud backup error
+        }
+      }
     }
   };
 
@@ -469,6 +530,8 @@ export default function App() {
     time: string;
     topic: string;
     teacherNote: string;
+    attendanceStatus?: AttendanceStatus;
+    grade?: number;
   }) => {
     if (!teacherToken) return;
     const res = await fetch('/api/sessions', {
@@ -480,16 +543,42 @@ export default function App() {
       body: JSON.stringify(payload),
     });
     const data = await res.json();
-    if (res.ok && authReady && firebaseUser) {
-      await syncSessionToFirestore(
-        { ...data.session, teacherId: firebaseUser.uid },
-        true
-      );
-      if (data.notification) {
-        await syncNotificationToFirestore(
-          { ...data.notification, teacherId: firebaseUser.uid },
-          true
+    if (res.ok) {
+      if (data.session) {
+        setSessions((prev) =>
+          prev.some((s) => s.id === data.session.id)
+            ? prev
+            : [...prev, data.session]
         );
+      }
+      if (data.student) {
+        setStudents((prev) =>
+          prev.map((s) => (s.id === data.student.id ? data.student : s))
+        );
+      }
+      if (authReady && firebaseUser) {
+        try {
+          if (data.student) {
+            await syncStudentToFirestore(
+              { ...data.student, teacherId: firebaseUser.uid },
+              false
+            );
+          }
+          if (data.session) {
+            await syncSessionToFirestore(
+              { ...data.session, teacherId: firebaseUser.uid },
+              true
+            );
+          }
+          if (data.notification) {
+            await syncNotificationToFirestore(
+              { ...data.notification, teacherId: firebaseUser.uid },
+              true
+            );
+          }
+        } catch {
+          // Ignore cloud backup error
+        }
       }
     }
   };
@@ -513,22 +602,47 @@ export default function App() {
       body: JSON.stringify(payload),
     });
     const data = await res.json();
-    if (res.ok && authReady && firebaseUser) {
-      await syncSessionToFirestore(
-        { ...data.session, teacherId: firebaseUser.uid },
-        false
-      );
-      if (data.student) {
-        await syncStudentToFirestore(
-          { ...data.student, teacherId: firebaseUser.uid },
-          false
+    if (res.ok) {
+      if (data.session) {
+        setSessions((prev) =>
+          prev.map((s) => (s.id === data.session.id ? data.session : s))
         );
       }
-      if (data.notification) {
-        await syncNotificationToFirestore(
-          { ...data.notification, teacherId: firebaseUser.uid },
-          true
+      if (data.autoCreatedSession) {
+        setSessions((prev) =>
+          prev.some((s) => s.id === data.autoCreatedSession.id)
+            ? prev
+            : [...prev, data.autoCreatedSession]
         );
+      }
+      if (data.student) {
+        setStudents((prev) =>
+          prev.map((s) => (s.id === data.student.id ? data.student : s))
+        );
+      }
+      if (authReady && firebaseUser) {
+        try {
+          if (data.student) {
+            await syncStudentToFirestore(
+              { ...data.student, teacherId: firebaseUser.uid },
+              false
+            );
+          }
+          if (data.session) {
+            await syncSessionToFirestore(
+              { ...data.session, teacherId: firebaseUser.uid },
+              false
+            );
+          }
+          if (data.notification) {
+            await syncNotificationToFirestore(
+              { ...data.notification, teacherId: firebaseUser.uid },
+              true
+            );
+          }
+        } catch {
+          // Ignore cloud backup error
+        }
       }
     }
   };
@@ -553,16 +667,29 @@ export default function App() {
       }),
     });
     const data = await res.json();
-    if (res.ok && authReady && firebaseUser) {
-      await syncRechargeToFirestore(
-        { ...data.rechargeRequest, teacherId: firebaseUser.uid },
-        true
-      );
-      if (data.notification) {
-        await syncNotificationToFirestore(
-          { ...data.notification, teacherId: firebaseUser.uid },
-          true
+    if (res.ok) {
+      if (data.rechargeRequest) {
+        setRechargeRequests((prev) =>
+          prev.some((r) => r.id === data.rechargeRequest.id)
+            ? prev
+            : [data.rechargeRequest, ...prev]
         );
+      }
+      if (authReady && firebaseUser) {
+        try {
+          await syncRechargeToFirestore(
+            { ...data.rechargeRequest, teacherId: firebaseUser.uid },
+            true
+          );
+          if (data.notification) {
+            await syncNotificationToFirestore(
+              { ...data.notification, teacherId: firebaseUser.uid },
+              true
+            );
+          }
+        } catch {
+          // Ignore cloud backup error
+        }
       }
     }
   };
@@ -581,22 +708,40 @@ export default function App() {
       body: JSON.stringify({ status }),
     });
     const data = await res.json();
-    if (res.ok && authReady && firebaseUser) {
-      await syncRechargeToFirestore(
-        { ...data.rechargeRequest, teacherId: firebaseUser.uid },
-        false
-      );
-      if (data.student) {
-        await syncStudentToFirestore(
-          { ...data.student, teacherId: firebaseUser.uid },
-          false
+    if (res.ok) {
+      if (data.rechargeRequest) {
+        setRechargeRequests((prev) =>
+          prev.map((r) =>
+            r.id === data.rechargeRequest.id ? data.rechargeRequest : r
+          )
         );
       }
-      if (data.notification) {
-        await syncNotificationToFirestore(
-          { ...data.notification, teacherId: firebaseUser.uid },
-          true
+      if (data.student) {
+        setStudents((prev) =>
+          prev.map((s) => (s.id === data.student.id ? data.student : s))
         );
+      }
+      if (authReady && firebaseUser) {
+        try {
+          await syncRechargeToFirestore(
+            { ...data.rechargeRequest, teacherId: firebaseUser.uid },
+            false
+          );
+          if (data.student) {
+            await syncStudentToFirestore(
+              { ...data.student, teacherId: firebaseUser.uid },
+              false
+            );
+          }
+          if (data.notification) {
+            await syncNotificationToFirestore(
+              { ...data.notification, teacherId: firebaseUser.uid },
+              true
+            );
+          }
+        } catch {
+          // Ignore cloud backup error
+        }
       }
     }
   };

@@ -1507,6 +1507,8 @@ async function startServer() {
       selectedDays: rawSelectedDays,
       tuitionPerSession,
       sessionsLeft,
+      totalSessionsPaid,
+      totalAttended,
     } = req.body;
 
     if (rawPhone !== undefined) {
@@ -1561,10 +1563,30 @@ async function startServer() {
     if (tuitionPerSession !== undefined) {
       student.tuitionPerSession = Math.max(0, Number(tuitionPerSession) || 0);
     }
+    if (totalSessionsPaid !== undefined && !isNaN(Number(totalSessionsPaid))) {
+      student.totalSessionsPaid = Math.max(
+        0,
+        Math.min(5000, Number(totalSessionsPaid))
+      );
+    }
+    if (totalAttended !== undefined && !isNaN(Number(totalAttended))) {
+      student.totalAttended = Math.max(
+        0,
+        Math.min(5000, Number(totalAttended))
+      );
+    }
     if (sessionsLeft !== undefined && !isNaN(Number(sessionsLeft))) {
       student.sessionsLeft = Math.max(
         -500,
         Math.min(1000, Number(sessionsLeft))
+      );
+    } else if (
+      totalSessionsPaid !== undefined ||
+      totalAttended !== undefined
+    ) {
+      student.sessionsLeft = Math.max(
+        -500,
+        Math.min(1000, student.totalSessionsPaid - student.totalAttended)
       );
     }
 
@@ -1714,7 +1736,15 @@ async function startServer() {
   app.post('/api/sessions', requireTeacherAuth, (req, res) => {
     const authSess = (req as express.Request & { authSession?: AuthSession })
       .authSession;
-    const { studentId, jalaliDate, time, topic, teacherNote } = req.body;
+    const {
+      studentId,
+      jalaliDate,
+      time,
+      topic,
+      teacherNote,
+      attendanceStatus: rawStatus,
+      grade: rawGrade,
+    } = req.body;
     const student = state.students.find(
       (s) => s.id === studentId && s.teacherId === authSess?.teacherId
     );
@@ -1727,6 +1757,17 @@ async function startServer() {
     const today = getCurrentJalaliDate();
     const cleanDate = toEnglishDigits(String(jalaliDate || today.formatted)).trim();
     const cleanTime = toEnglishDigits(String(time || student.classTime)).trim();
+    const initialStatus =
+      rawStatus === 'present' ||
+      rawStatus === 'absent_charged' ||
+      rawStatus === 'absent' ||
+      rawStatus === 'excused'
+        ? rawStatus
+        : 'scheduled';
+    const parsedGrade =
+      rawGrade !== undefined && !isNaN(Number(rawGrade))
+        ? Math.max(-1, Math.min(20, Number(rawGrade)))
+        : -1;
 
     const newSession: ClassSession = {
       id: `sess_${Date.now()}`,
@@ -1736,8 +1777,8 @@ async function startServer() {
       subject: student.subject,
       jalaliDate: cleanDate,
       time: cleanTime,
-      attendanceStatus: 'scheduled',
-      grade: -1,
+      attendanceStatus: initialStatus,
+      grade: initialStatus === 'present' ? parsedGrade : -1,
       topic: String(topic || `جلسه آموزشی ${student.subject}`).slice(0, 300),
       teacherNote: String(teacherNote || '').slice(0, 500),
       teacherId: student.teacherId,
@@ -1747,13 +1788,34 @@ async function startServer() {
 
     state.sessions.push(newSession);
 
+    if (initialStatus === 'present' || initialStatus === 'absent_charged') {
+      student.sessionsLeft = student.sessionsLeft - 1;
+      if (initialStatus === 'present') {
+        student.totalAttended += 1;
+      }
+      student.updatedAt = nowIso;
+      broadcastScoped(
+        { type: 'student:updated', payload: student },
+        student.id,
+        student.teacherId
+      );
+    }
+
     const notif: AppNotification = {
       id: `notif_${Date.now()}`,
       targetRole: 'student',
       targetStudentId: student.id,
       type: 'session_reminder',
-      title: `جلسه جدید در تاریخ ${formatReadableJalali(cleanDate)}`,
-      body: `جلسه کلاس ${student.subject} برای ساعت ${toPersianDigits(cleanTime)} با موضوع «${newSession.topic}» تنظیم شد.`,
+      title:
+        initialStatus === 'present'
+          ? `ثبت حضور جلسه جدید (${formatReadableJalali(cleanDate)})`
+          : initialStatus === 'absent_charged'
+          ? `ثبت غیبت با کسر جلسه (${formatReadableJalali(cleanDate)})`
+          : `جلسه جدید در تاریخ ${formatReadableJalali(cleanDate)}`,
+      body:
+        initialStatus === 'present' || initialStatus === 'absent_charged'
+          ? `جلسه کلاس ${student.subject} در تاریخ ${toPersianDigits(cleanDate)} ثبت و ۱ جلسه از اعتبار کسر شد. تراز فعلی: ${formatSignedPersianNumber(student.sessionsLeft)} جلسه.`
+          : `جلسه کلاس ${student.subject} برای ساعت ${toPersianDigits(cleanTime)} با موضوع «${newSession.topic}» تنظیم شد.`,
       jalaliTime: `${today.weekdayName} — اکنون`,
       isRead: false,
       teacherId: student.teacherId,
@@ -1774,7 +1836,7 @@ async function startServer() {
       student.teacherId
     );
 
-    res.json({ session: newSession, notification: notif });
+    res.json({ session: newSession, student, notification: notif });
   });
 
   app.patch('/api/sessions/:id', requireTeacherAuth, (req, res) => {
@@ -1808,6 +1870,8 @@ async function startServer() {
     session.updatedAt = nowIso;
 
     const student = state.students.find((s) => s.id === session.studentId);
+    let autoCreatedSession: ClassSession | null = null;
+
     if (student) {
       const wasConsumed =
         prevStatus === 'present' || prevStatus === 'absent_charged';
@@ -1839,6 +1903,49 @@ async function startServer() {
         student.updatedAt = nowIso;
         broadcastScoped(
           { type: 'student:updated', payload: student },
+          student.id,
+          student.teacherId
+        );
+      }
+
+      // If all scheduled sessions for this student have now been marked (0 scheduled left),
+      // automatically schedule their next upcoming session on their selected weekdays so the
+      // teacher can seamlessly mark the 6th, 7th, etc. session (even into negative credit).
+      const remainingScheduled = state.sessions.filter(
+        (s) => s.studentId === student.id && s.attendanceStatus === 'scheduled'
+      );
+      if (remainingScheduled.length === 0) {
+        const studentSessions = state.sessions
+          .filter((s) => s.studentId === student.id)
+          .sort((a, b) => b.jalaliDate.localeCompare(a.jalaliDate));
+        const lastDate = studentSessions[0]?.jalaliDate || today.formatted;
+        const nextStartCandidate = addJalaliDays(lastDate, 1);
+        const nextDates = generateSessionDatesByWeekdays(
+          nextStartCandidate,
+          sanitizeSelectedDays(student.selectedDays),
+          1
+        );
+        const nextDate = nextDates[0] || addJalaliDays(lastDate, 3);
+        const nextSessionNumber = studentSessions.length + 1;
+        autoCreatedSession = {
+          id: `sess_${Date.now()}_auto`,
+          studentId: student.id,
+          studentName: student.name,
+          studentPhone: student.phone,
+          subject: student.subject,
+          jalaliDate: nextDate,
+          time: student.classTime,
+          attendanceStatus: 'scheduled',
+          grade: -1,
+          topic: `جلسه ${toPersianDigits(nextSessionNumber)} — ${student.subject}`,
+          teacherNote: '',
+          teacherId: student.teacherId,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        state.sessions.push(autoCreatedSession);
+        broadcastScoped(
+          { type: 'session:created', payload: autoCreatedSession },
           student.id,
           student.teacherId
         );
@@ -1895,7 +2002,12 @@ async function startServer() {
       session.teacherId
     );
 
-    res.json({ session, student, notification: createdNotif });
+    res.json({
+      session,
+      student,
+      autoCreatedSession,
+      notification: createdNotif,
+    });
   });
 
   app.patch('/api/recharge-requests/:id', requireTeacherAuth, (req, res) => {
