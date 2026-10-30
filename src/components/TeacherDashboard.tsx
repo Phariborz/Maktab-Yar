@@ -34,6 +34,9 @@ import {
   formatJalaliMonthTitle,
   formatWeekdaysLabel,
   sanitizeSelectedDays,
+  sanitizeDayTimes,
+  formatStudentScheduleSummary,
+  getTimeForJalaliDate,
 } from '../utils/jalali';
 import { JalaliCalendar } from './JalaliCalendar';
 import type {
@@ -44,6 +47,7 @@ import type {
   AppNotification,
   IntervalType,
   AttendanceStatus,
+  PaymentSystemType,
 } from '../types';
 
 export type TeacherTab =
@@ -70,10 +74,13 @@ interface TeacherDashboardProps {
     startDate: string;
     classTime: string;
     selectedDays: number[];
+    dayTimes?: Record<string, string>;
     intervalType: IntervalType;
     intervalLabel: string;
     tuitionPerSession: number;
     sessionsLeft: number;
+    paymentType?: PaymentSystemType;
+    postpaidCycleSessions?: number;
   }) => Promise<void>;
   onEditStudent: (
     studentId: string,
@@ -85,10 +92,13 @@ interface TeacherDashboardProps {
       startDate: string;
       classTime: string;
       selectedDays: number[];
+      dayTimes?: Record<string, string>;
       tuitionPerSession: number;
       sessionsLeft: number;
       totalSessionsPaid?: number;
       totalAttended?: number;
+      paymentType?: PaymentSystemType;
+      postpaidCycleSessions?: number;
     }
   ) => Promise<void>;
   onDirectRechargeStudent: (
@@ -174,6 +184,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [showMobileNotificationsDrawer, setShowMobileNotificationsDrawer] =
     useState(false);
   const [studentSearchQuery, setStudentSearchQuery] = useState('');
+  const [studentPaymentFilter, setStudentPaymentFilter] = useState<
+    'all' | 'prepaid' | 'postpaid' | 'due'
+  >('all');
 
   // Add Student Form state
   const [stuName, setStuName] = useState('');
@@ -183,6 +196,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [stuStartDate, setStuStartDate] = useState(today.formatted);
   const [stuTime, setStuTime] = useState('17:00');
   const [stuSelectedDays, setStuSelectedDays] = useState<number[]>([0, 3]); // شنبه و سه‌شنبه
+  const [stuDayTimes, setStuDayTimes] = useState<Record<string, string>>({
+    '0': '17:00',
+    '3': '17:00',
+  });
+  const [stuPaymentType, setStuPaymentType] =
+    useState<PaymentSystemType>('prepaid');
+  const [stuPostpaidCycle, setStuPostpaidCycle] = useState<number>(4);
   const [stuTuition, setStuTuition] = useState(600000);
   const [stuInitialSessions, setStuInitialSessions] = useState(5);
   const [studentFormMsg, setStudentFormMsg] = useState<{
@@ -200,6 +220,12 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   const [editStuStartDate, setEditStuStartDate] = useState('');
   const [editStuTime, setEditStuTime] = useState('');
   const [editStuSelectedDays, setEditStuSelectedDays] = useState<number[]>([0]);
+  const [editStuDayTimes, setEditStuDayTimes] = useState<Record<string, string>>(
+    {}
+  );
+  const [editStuPaymentType, setEditStuPaymentType] =
+    useState<PaymentSystemType>('prepaid');
+  const [editStuPostpaidCycle, setEditStuPostpaidCycle] = useState<number>(4);
   const [editStuTuition, setEditStuTuition] = useState(600000);
   const [editStuSessionsLeft, setEditStuSessionsLeft] = useState(0);
   const [editStuTotalPaid, setEditStuTotalPaid] = useState(0);
@@ -292,19 +318,32 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     (s) => s.jalaliDate === selectedDate
   );
 
-  // Filtered students for quick mobile/desktop search
+  // Filtered students for quick mobile/desktop search + payment system filter
   const filteredStudentsList = useMemo(() => {
-    if (!studentSearchQuery.trim()) return students;
+    let base = students;
+    if (studentPaymentFilter === 'prepaid') {
+      base = base.filter((s) => (s.paymentType || 'prepaid') === 'prepaid');
+    } else if (studentPaymentFilter === 'postpaid') {
+      base = base.filter((s) => s.paymentType === 'postpaid');
+    } else if (studentPaymentFilter === 'due') {
+      base = base.filter(
+        (s) =>
+          s.sessionsLeft < 0 ||
+          ((s.paymentType || 'prepaid') === 'prepaid' && s.sessionsLeft === 0)
+      );
+    }
+
+    if (!studentSearchQuery.trim()) return base;
     const q = studentSearchQuery.trim();
     const qEn = toEnglishDigits(q);
-    return students.filter(
+    return base.filter(
       (s) =>
         s.name.includes(q) ||
         s.subject.includes(q) ||
         s.phone.includes(qEn) ||
         s.intervalLabel.includes(q)
     );
-  }, [students, studentSearchQuery]);
+  }, [students, studentSearchQuery, studentPaymentFilter]);
 
   // Available Jalali months for Monthly Profit Summary
   const availableMonths = useMemo(() => {
@@ -436,7 +475,20 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     setStudentFormMsg(null);
     setAddingStudent(true);
     const cleanDays = sanitizeSelectedDays(stuSelectedDays);
-    const intervalLabel = formatWeekdaysLabel(cleanDays);
+    const cleanDefaultTime = toEnglishDigits(stuTime).trim() || '17:00';
+    const cleanDayTimes = sanitizeDayTimes(
+      stuDayTimes,
+      cleanDays,
+      cleanDefaultTime
+    );
+    const primaryTime = cleanDayTimes[String(cleanDays[0])] || cleanDefaultTime;
+    const intervalLabel = formatWeekdaysLabel(
+      cleanDays,
+      cleanDayTimes,
+      primaryTime
+    );
+    const initialSessionsValue =
+      stuPaymentType === 'postpaid' ? Number(stuInitialSessions) || 0 : Number(stuInitialSessions) || 0;
     try {
       await onAddStudent({
         name: stuName.trim(),
@@ -444,18 +496,21 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         password: toEnglishDigits(stuPassword).trim() || '123456',
         subject: stuSubject.trim(),
         startDate: toEnglishDigits(stuStartDate).trim(),
-        classTime: toEnglishDigits(stuTime).trim(),
+        classTime: primaryTime,
         selectedDays: cleanDays,
+        dayTimes: cleanDayTimes,
         intervalType: 'custom_days',
         intervalLabel,
         tuitionPerSession: Number(stuTuition) || 500000,
-        sessionsLeft: Number(stuInitialSessions) || 0,
+        sessionsLeft: initialSessionsValue,
+        paymentType: stuPaymentType,
+        postpaidCycleSessions: Math.max(1, Number(stuPostpaidCycle) || 4),
       });
       setStudentFormMsg({
         type: 'success',
-        text: `دانش‌آموز «${stuName}» با رمز عبور «${toEnglishDigits(
-          stuPassword
-        )}» و برنامه کلاسی (${intervalLabel}) ثبت شد.`,
+        text: `دانش‌آموز «${stuName}» (${
+          stuPaymentType === 'postpaid' ? 'پس‌پرداخت' : 'پیش‌پرداخت'
+        }) با برنامه کلاسی (${intervalLabel}) ثبت شد.`,
       });
       setStuName('');
       setStuPhone('');
@@ -472,18 +527,26 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   };
 
   const handleOpenEditStudentModal = (stu: Student) => {
+    const cleanDays =
+      Array.isArray(stu.selectedDays) && stu.selectedDays.length > 0
+        ? sanitizeSelectedDays(stu.selectedDays)
+        : [0, 3];
+    const cleanDayTimes = sanitizeDayTimes(
+      stu.dayTimes,
+      cleanDays,
+      stu.classTime || '17:00'
+    );
     setEditingStudent(stu);
     setEditStuName(stu.name);
     setEditStuPhone(stu.phone);
     setEditStuPassword(stu.password || '123456');
     setEditStuSubject(stu.subject);
     setEditStuStartDate(stu.startDate);
-    setEditStuTime(stu.classTime);
-    setEditStuSelectedDays(
-      Array.isArray(stu.selectedDays) && stu.selectedDays.length > 0
-        ? sanitizeSelectedDays(stu.selectedDays)
-        : [0, 3]
-    );
+    setEditStuTime(stu.classTime || '17:00');
+    setEditStuSelectedDays(cleanDays);
+    setEditStuDayTimes(cleanDayTimes);
+    setEditStuPaymentType(stu.paymentType || 'prepaid');
+    setEditStuPostpaidCycle(stu.postpaidCycleSessions || 4);
     setEditStuTuition(stu.tuitionPerSession);
     setEditStuSessionsLeft(stu.sessionsLeft);
     setEditStuTotalPaid(
@@ -500,6 +563,14 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
     if (!editingStudent) return;
     setEditStudentMsg(null);
     setSavingStudentEdit(true);
+    const cleanDays = sanitizeSelectedDays(editStuSelectedDays);
+    const cleanDefaultTime = toEnglishDigits(editStuTime).trim() || '17:00';
+    const cleanDayTimes = sanitizeDayTimes(
+      editStuDayTimes,
+      cleanDays,
+      cleanDefaultTime
+    );
+    const primaryTime = cleanDayTimes[String(cleanDays[0])] || cleanDefaultTime;
     try {
       await onEditStudent(editingStudent.id, {
         name: editStuName.trim(),
@@ -507,12 +578,15 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         password: editStuPassword.trim(),
         subject: editStuSubject.trim(),
         startDate: toEnglishDigits(editStuStartDate).trim(),
-        classTime: toEnglishDigits(editStuTime).trim(),
-        selectedDays: sanitizeSelectedDays(editStuSelectedDays),
+        classTime: primaryTime,
+        selectedDays: cleanDays,
+        dayTimes: cleanDayTimes,
         tuitionPerSession: Number(editStuTuition) || 0,
         sessionsLeft: Number(editStuSessionsLeft),
         totalSessionsPaid: Number(editStuTotalPaid),
         totalAttended: Number(editStuTotalAttended),
+        paymentType: editStuPaymentType,
+        postpaidCycleSessions: Math.max(1, Number(editStuPostpaidCycle) || 4),
       });
       setEditingStudent(null);
     } catch (err) {
@@ -543,10 +617,16 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         teacherNote: nextScheduled.teacherNote || 'ثبت حضور جلسه',
       });
     } else {
+      const resolvedTime = getTimeForJalaliDate(
+        today.formatted,
+        stu.selectedDays,
+        stu.classTime || '17:00',
+        stu.dayTimes
+      );
       await onAddSession({
         studentId: stu.id,
         jalaliDate: today.formatted,
-        time: stu.classTime || '17:00',
+        time: resolvedTime,
         topic: `جلسه شماره ${toPersianDigits(stu.totalAttended + 1)} — ${stu.subject}`,
         teacherNote: 'ثبت حضور جلسه جدید',
         attendanceStatus: 'present',
@@ -1545,6 +1625,81 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   </div>
                 </div>
 
+                {/* Payment System Type (Prepaid vs Postpaid) in Edit Modal */}
+                <div className="p-3.5 sm:p-4 rounded-[10px] bg-[#fafaf7] border border-[#e6e5e0] space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="block text-[13px] font-semibold text-[#26251e]">
+                      سیستم پرداخت شهریه دانش‌آموز
+                    </label>
+                    <span className="text-[12px] text-[#5a5852]">
+                      {editStuPaymentType === 'postpaid'
+                        ? 'پس‌پرداخت: ابتدا جلسات برگزار می‌شود و در پایان دوره تسویه می‌گردد'
+                        : 'پیش‌پرداخت: شهریه ابتدای دوره دریافت و با هر حضور کسر می‌شود'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => setEditStuPaymentType('prepaid')}
+                      className={`min-h-[44px] px-3.5 py-2.5 rounded-[8px] border text-right transition-colors cursor-pointer flex items-center justify-between ${
+                        editStuPaymentType === 'prepaid'
+                          ? 'bg-[#26251e] text-[#f7f7f4] border-[#26251e]'
+                          : 'bg-[#ffffff] text-[#26251e] border-[#cfcdc4]'
+                      }`}
+                    >
+                      <span className="text-[13px] font-semibold">
+                        پیش‌پرداخت (شارژ قبل از کلاس)
+                      </span>
+                      <span className="text-[11px] opacity-80">اعتبار اولیه مثبت</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setEditStuPaymentType('postpaid')}
+                      className={`min-h-[44px] px-3.5 py-2.5 rounded-[8px] border text-right transition-colors cursor-pointer flex items-center justify-between ${
+                        editStuPaymentType === 'postpaid'
+                          ? 'bg-[#26251e] text-[#f7f7f4] border-[#26251e]'
+                          : 'bg-[#ffffff] text-[#26251e] border-[#cfcdc4]'
+                      }`}
+                    >
+                      <span className="text-[13px] font-semibold">
+                        پس‌پرداخت (تسویه پس از برگزاری)
+                      </span>
+                      <span className="text-[11px] opacity-80">تسویه دوره‌ای</span>
+                    </button>
+                  </div>
+
+                  {editStuPaymentType === 'postpaid' && (
+                    <div className="pt-2 border-t border-[#e6e5e0] flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <span className="text-[12px] font-semibold text-[#26251e] block">
+                          سیکل تسویه پس‌پرداخت (هر چند جلسه یک‌بار تسویه شود؟)
+                        </span>
+                        <span className="text-[11px] text-[#807d72]">
+                          پس از رسیدن جلسات برگزارشده به این عدد، هشدار «موعد تسویه پس‌پرداخت» نمایش داده می‌شود.
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        {[1, 4, 5, 8, 10].map((cycle) => (
+                          <button
+                            key={cycle}
+                            type="button"
+                            onClick={() => setEditStuPostpaidCycle(cycle)}
+                            className={`min-h-[38px] px-3 rounded-[6px] text-[12px] font-mono-code font-semibold border cursor-pointer ${
+                              editStuPostpaidCycle === cycle
+                                ? 'bg-[#f54e00] text-white border-[#f54e00]'
+                                : 'bg-[#ffffff] text-[#26251e] border-[#cfcdc4]'
+                            }`}
+                          >
+                            هر {toPersianDigits(cycle)} جلسه
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 {/* Accounting & Session Balance Reconciliation Box */}
                 <div className="p-3.5 sm:p-4 rounded-[10px] bg-[#fafaf7] border border-[#cfcdc4] space-y-3">
                   <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1561,9 +1716,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       }`}
                     >
                       {editStuSessionsLeft < 0
-                        ? `وضعیت: ${formatSignedPersianNumber(editStuSessionsLeft)} جلسه (بدهکار — ${formatToman(Math.abs(editStuSessionsLeft) * editStuTuition)})`
+                        ? editStuPaymentType === 'postpaid'
+                          ? `پس‌پرداخت: ${toPersianDigits(Math.abs(editStuSessionsLeft))} جلسه برگزارشده در انتظار تسویه (${formatToman(Math.abs(editStuSessionsLeft) * editStuTuition)})`
+                          : `وضعیت: ${formatSignedPersianNumber(editStuSessionsLeft)} جلسه (بدهکار — ${formatToman(Math.abs(editStuSessionsLeft) * editStuTuition)})`
                         : editStuSessionsLeft === 0
-                        ? 'وضعیت: ۰ جلسه باقی‌مانده (اتمام اعتبار)'
+                        ? editStuPaymentType === 'postpaid'
+                          ? 'وضعیت پس‌پرداخت: تسویه کامل (۰ جلسه معوق)'
+                          : 'وضعیت: ۰ جلسه باقی‌مانده (اتمام اعتبار)'
                         : `وضعیت: ${toPersianDigits(editStuSessionsLeft)} جلسه اعتبار باقی‌مانده`}
                     </span>
                   </div>
@@ -1571,7 +1730,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
                     <div>
                       <label className="block text-[12px] font-semibold text-[#26251e] mb-1">
-                        کل جلسات پرداخت‌شده تاکنون
+                        کل جلسات پرداخت‌شده / تسویه‌شده
                       </label>
                       <input
                         type="number"
@@ -1587,7 +1746,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                         required
                       />
                       <span className="block text-[11px] text-[#807d72] mt-1">
-                        مثال: اگر ۵ جلسه پرداخت کرده و ۶ جلسه آمده، تراز ۱- (بدهکار) می‌شود.
+                        مثال: اگر ۵ جلسه پرداخت کرده و ۶ جلسه آمده، تراز ۱- می‌شود.
                       </span>
                     </div>
 
@@ -1631,17 +1790,26 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                         required
                       />
                       <span className="block text-[11px] text-[#807d72] mt-1">
-                        عدد منفی (مثلاً -1) یعنی دانش‌آموز بدهکار است.
+                        عدد منفی (مثلاً -1) یعنی جلسه برگزار شده ولی هنوز تسویه نشده است.
                       </span>
                     </div>
                   </div>
                 </div>
 
-                {/* Weekday Multi-Select in Edit Modal (>=44px tap targets) */}
-                <div>
-                  <label className="block text-[13px] font-semibold text-[#26251e] mb-2">
-                    انتخاب روزهای هفته برگزاری کلاس ({formatWeekdaysLabel(editStuSelectedDays)})
-                  </label>
+                {/* Weekday Multi-Select + Per-Weekday Class Hours in Edit Modal */}
+                <div className="p-3.5 sm:p-4 rounded-[10px] bg-[#fafaf7] border border-[#e6e5e0] space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="block text-[13px] font-semibold text-[#26251e]">
+                      روزهای هفته و ساعت اختصاصی هر روز
+                    </label>
+                    <span className="text-[12px] font-semibold text-[#f54e00]">
+                      {formatWeekdaysLabel(
+                        editStuSelectedDays,
+                        editStuDayTimes,
+                        editStuTime
+                      )}
+                    </span>
+                  </div>
                   <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
                     {JALALI_WEEKDAYS.map((dayName, idx) => {
                       const isSelected = editStuSelectedDays.includes(idx);
@@ -1649,23 +1817,82 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                         <button
                           key={dayName}
                           type="button"
-                          onClick={() =>
+                          onClick={() => {
                             toggleWeekday(
                               idx,
                               editStuSelectedDays,
                               setEditStuSelectedDays
-                            )
-                          }
+                            );
+                            setEditStuDayTimes((prev) => ({
+                              ...prev,
+                              [String(idx)]:
+                                prev[String(idx)] || editStuTime || '17:00',
+                            }));
+                          }}
                           className={`min-h-[44px] px-2 text-[13px] font-semibold rounded-[8px] border transition-colors cursor-pointer ${
                             isSelected
                               ? 'bg-[#26251e] text-[#f7f7f4] border-[#26251e]'
-                              : 'bg-[#fafaf7] text-[#5a5852] border-[#cfcdc4] hover:text-[#26251e]'
+                              : 'bg-[#ffffff] text-[#5a5852] border-[#cfcdc4] hover:text-[#26251e]'
                           }`}
                         >
                           {dayName}
                         </button>
                       );
                     })}
+                  </div>
+
+                  {/* Per-Weekday Distinct Time Inputs */}
+                  <div className="pt-2 border-t border-[#e6e5e0] space-y-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-[12px] font-semibold text-[#26251e]">
+                        تنظیم ساعت مجزا برای هر روز انتخاب‌شده (مثال: دوشنبه ۱۶:۰۰ و جمعه ۱۰:۰۰):
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const unified: Record<string, string> = {};
+                          editStuSelectedDays.forEach((d) => {
+                            unified[String(d)] = editStuTime || '17:00';
+                          });
+                          setEditStuDayTimes(unified);
+                        }}
+                        className="text-[11px] font-medium text-[#f54e00] hover:underline cursor-pointer"
+                      >
+                        اعمال ساعت پیش‌فرض ({toPersianDigits(editStuTime || '17:00')}) برای همه روزها
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                      {editStuSelectedDays.map((dayIdx) => {
+                        const dayKey = String(dayIdx);
+                        const dayVal =
+                          editStuDayTimes[dayKey] || editStuTime || '17:00';
+                        return (
+                          <div
+                            key={dayKey}
+                            className="flex items-center justify-between gap-2 p-2.5 rounded-[8px] bg-[#ffffff] border border-[#cfcdc4]"
+                          >
+                            <span className="text-[13px] font-semibold text-[#26251e]">
+                              ساعت {JALALI_WEEKDAYS[dayIdx]}:
+                            </span>
+                            <input
+                              type="time"
+                              value={dayVal}
+                              onChange={(e) => {
+                                const newTime = e.target.value;
+                                setEditStuDayTimes((prev) => ({
+                                  ...prev,
+                                  [dayKey]: newTime,
+                                }));
+                                if (dayIdx === editStuSelectedDays[0]) {
+                                  setEditStuTime(newTime);
+                                }
+                              }}
+                              className="min-h-[38px] px-2.5 text-[14px] font-mono-code border border-[#cfcdc4] rounded-[6px] bg-[#fafaf7]"
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
 
@@ -1691,16 +1918,26 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             </div>
           )}
 
-          {/* Direct Teacher Recharge Panel (when a student is selected for recharge) */}
+          {/* Direct Teacher Recharge / Postpaid Settlement Panel */}
           {rechargingStudent && (
             <div className="border-2 border-[#f54e00] bg-[#ffffff] rounded-[12px] p-4 sm:p-6">
               <div className="flex items-center justify-between pb-3 mb-4 border-b border-[#e6e5e0]">
                 <div>
                   <h3 className="text-[16px] sm:text-[18px] font-semibold text-[#26251e]">
-                    شارژ مستقیم جلسات: {rechargingStudent.name} ({rechargingStudent.subject})
+                    {rechargingStudent.paymentType === 'postpaid'
+                      ? `تسویه حساب دوره پس‌پرداخت: ${rechargingStudent.name} (${rechargingStudent.subject})`
+                      : `شارژ مستقیم جلسات پیش‌پرداخت: ${rechargingStudent.name} (${rechargingStudent.subject})`}
                   </h3>
                   <p className="text-[13px] text-[#5a5852] mt-0.5 font-mono-code">
-                    تراز فعلی:{' '}
+                    نوع حساب:{' '}
+                    <span className="font-semibold text-[#26251e]">
+                      {rechargingStudent.paymentType === 'postpaid'
+                        ? `پس‌پرداخت (سیکل تسویه هر ${toPersianDigits(
+                            rechargingStudent.postpaidCycleSessions || 4
+                          )} جلسه)`
+                        : 'پیش‌پرداخت'}
+                    </span>{' '}
+                    · تراز فعلی:{' '}
                     <span
                       className={
                         rechargingStudent.sessionsLeft < 0
@@ -1711,9 +1948,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       {formatSignedPersianNumber(rechargingStudent.sessionsLeft)} جلسه
                     </span>
                     {rechargingStudent.sessionsLeft < 0
-                      ? ` (با افزودن ${toPersianDigits(
+                      ? ` (با ثبت پرداخت ${toPersianDigits(
                           rechargeAddCount
-                        )} جلسه، بدهی قبلی کسر و تراز جدید ${formatSignedPersianNumber(
+                        )} جلسه، تراز جدید ${formatSignedPersianNumber(
                           rechargingStudent.sessionsLeft + rechargeAddCount
                         )} جلسه خواهد شد)`
                       : ''}
@@ -1728,13 +1965,42 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                 </button>
               </div>
 
+              {rechargingStudent.sessionsLeft < 0 && (
+                <div className="mb-4 flex flex-wrap items-center gap-2">
+                  <span className="text-[12px] text-[#5a5852]">انتخاب سریع تعداد جلسات:</span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setRechargeAddCount(Math.abs(rechargingStudent.sessionsLeft))
+                    }
+                    className="min-h-[36px] px-3 rounded-[6px] bg-[#fafaf7] border border-[#cfcdc4] text-[12px] font-semibold text-[#26251e] hover:border-[#26251e] cursor-pointer"
+                  >
+                    تسویه کامل جلسات برگزارشده ({toPersianDigits(Math.abs(rechargingStudent.sessionsLeft))} جلسه = تراز ۰)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setRechargeAddCount(
+                        Math.abs(rechargingStudent.sessionsLeft) +
+                          (rechargingStudent.postpaidCycleSessions || 4)
+                      )
+                    }
+                    className="min-h-[36px] px-3 rounded-[6px] bg-[#fafaf7] border border-[#cfcdc4] text-[12px] font-semibold text-[#26251e] hover:border-[#26251e] cursor-pointer"
+                  >
+                    تسویه بدهی + شارژ {toPersianDigits(rechargingStudent.postpaidCycleSessions || 4)} جلسه آینده
+                  </button>
+                </div>
+              )}
+
               <form
                 onSubmit={handleDirectRechargeSubmit}
                 className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 sm:gap-4 items-end"
               >
                 <div>
                   <label className="block text-[13px] font-semibold text-[#26251e] mb-1.5">
-                    تعداد جلسات شارژ جدید
+                    {rechargingStudent.paymentType === 'postpaid'
+                      ? 'تعداد جلسات تسویه‌شده'
+                      : 'تعداد جلسات شارژ جدید'}
                   </label>
                   <input
                     type="number"
@@ -1774,7 +2040,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     type="text"
                     value={rechargeNote}
                     onChange={(e) => setRechargeNote(e.target.value)}
-                    placeholder="مثال: پرداخت نقدی / کارت به کارت"
+                    placeholder={
+                      rechargingStudent.paymentType === 'postpaid'
+                        ? 'مثال: تسویه پس‌پرداخت جلسات برگزارشده'
+                        : 'مثال: پرداخت نقدی / کارت به کارت'
+                    }
                     className="w-full min-h-[44px] px-3.5 text-[16px] sm:text-[14px] border border-[#cfcdc4] rounded-[8px]"
                   />
                 </div>
@@ -1787,6 +2057,10 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                   >
                     {submittingRecharge
                       ? 'در حال ثبت...'
+                      : rechargingStudent.paymentType === 'postpaid'
+                      ? `ثبت تسویه پس‌پرداخت (تراز جدید: ${formatSignedPersianNumber(
+                          rechargingStudent.sessionsLeft + rechargeAddCount
+                        )} جلسه)`
                       : `ثبت شارژ (تراز جدید: ${formatSignedPersianNumber(
                           rechargingStudent.sessionsLeft + rechargeAddCount
                         )} جلسه)`}
@@ -1936,26 +2210,36 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
                   <div>
                     <label className="block text-[13px] font-semibold text-[#26251e] mb-1">
-                      ساعت ثابت کلاس
+                      ساعت پیش‌فرض کلاس
                     </label>
                     <input
                       type="time"
                       value={stuTime}
-                      onChange={(e) => setStuTime(e.target.value)}
+                      onChange={(e) => {
+                        const newDefault = e.target.value;
+                        setStuTime(newDefault);
+                        setStuDayTimes((prev) => {
+                          const next = { ...prev };
+                          stuSelectedDays.forEach((d) => {
+                            if (!next[String(d)]) next[String(d)] = newDefault;
+                          });
+                          return next;
+                        });
+                      }}
                       className="w-full min-h-[44px] px-3.5 text-[16px] sm:text-[14px] font-mono-code border border-[#cfcdc4] rounded-[8px] focus:outline-none focus:border-[#26251e]"
                       required
                     />
                   </div>
                 </div>
 
-                {/* Selectable Days of the Week in Any Combination (>=44px tap targets) */}
-                <div className="p-3.5 rounded-[8px] bg-[#fafaf7] border border-[#e6e5e0] space-y-2.5">
-                  <div className="flex items-center justify-between">
+                {/* Selectable Days of the Week + Distinct Time per Day */}
+                <div className="p-3.5 rounded-[8px] bg-[#fafaf7] border border-[#e6e5e0] space-y-3">
+                  <div className="flex items-center justify-between gap-2">
                     <label className="block text-[13px] font-semibold text-[#26251e]">
-                      روزهای هفته (به هر ترکیب دلخواه)
+                      روزهای هفته و ساعت اختصاصی هر روز
                     </label>
                     <span className="text-[11px] font-semibold text-[#f54e00]">
-                      {formatWeekdaysLabel(stuSelectedDays)}
+                      {formatWeekdaysLabel(stuSelectedDays, stuDayTimes, stuTime)}
                     </span>
                   </div>
 
@@ -1966,9 +2250,13 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                         <button
                           key={dayName}
                           type="button"
-                          onClick={() =>
-                            toggleWeekday(idx, stuSelectedDays, setStuSelectedDays)
-                          }
+                          onClick={() => {
+                            toggleWeekday(idx, stuSelectedDays, setStuSelectedDays);
+                            setStuDayTimes((prev) => ({
+                              ...prev,
+                              [String(idx)]: prev[String(idx)] || stuTime || '17:00',
+                            }));
+                          }}
                           className={`min-h-[44px] py-2 px-1 text-[12px] font-semibold rounded-[8px] border transition-colors cursor-pointer text-center ${
                             active
                               ? 'bg-[#26251e] text-[#f7f7f4] border-[#26251e]'
@@ -1981,7 +2269,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     })}
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <span className="text-[11px] text-[#807d72]">انتخاب سریع:</span>
                     <button
                       type="button"
@@ -1999,12 +2287,148 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setStuSelectedDays([0, 3])}
+                      onClick={() => {
+                        setStuSelectedDays([2, 6]);
+                        setStuDayTimes((prev) => ({
+                          ...prev,
+                          '2': '16:00',
+                          '6': '10:00',
+                        }));
+                      }}
                       className="min-h-[34px] px-2.5 py-1 text-[11px] bg-[#ffffff] border border-[#cfcdc4] rounded-[6px] text-[#5a5852] hover:text-[#26251e] cursor-pointer"
                     >
-                      شنبه و سه‌شنبه
+                      دوشنبه (۱۶:۰۰) و جمعه (۱۰:۰۰)
                     </button>
                   </div>
+
+                  {/* Per-Weekday Time Inputs */}
+                  <div className="pt-2.5 border-t border-[#e6e5e0] space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[12px] font-semibold text-[#26251e]">
+                        ساعت کلاس به تفکیک هر روز انتخاب‌شده:
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next: Record<string, string> = {};
+                          stuSelectedDays.forEach((d) => {
+                            next[String(d)] = stuTime || '17:00';
+                          });
+                          setStuDayTimes(next);
+                        }}
+                        className="text-[11px] text-[#f54e00] font-medium hover:underline cursor-pointer"
+                      >
+                        یکسان‌سازی با ساعت پیش‌فرض
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {stuSelectedDays.map((dayIdx) => {
+                        const dayKey = String(dayIdx);
+                        const dayTimeVal = stuDayTimes[dayKey] || stuTime || '17:00';
+                        return (
+                          <div
+                            key={dayKey}
+                            className="flex items-center justify-between gap-2 px-3 py-2 rounded-[8px] bg-[#ffffff] border border-[#cfcdc4]"
+                          >
+                            <span className="text-[12px] font-semibold text-[#26251e]">
+                              {JALALI_WEEKDAYS[dayIdx]}:
+                            </span>
+                            <input
+                              type="time"
+                              value={dayTimeVal}
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                setStuDayTimes((prev) => ({
+                                  ...prev,
+                                  [dayKey]: val,
+                                }));
+                                if (dayIdx === stuSelectedDays[0]) {
+                                  setStuTime(val);
+                                }
+                              }}
+                              className="min-h-[36px] px-2 text-[13px] font-mono-code border border-[#cfcdc4] rounded-[6px] bg-[#fafaf7]"
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Payment System Type Selector: Prepaid vs Postpaid */}
+                <div className="p-3.5 rounded-[8px] bg-[#fafaf7] border border-[#e6e5e0] space-y-3">
+                  <label className="block text-[13px] font-semibold text-[#26251e]">
+                    نوع سیستم پرداخت شهریه (پیش‌پرداخت / پس‌پرداخت)
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStuPaymentType('prepaid');
+                        if (stuInitialSessions === 0) setStuInitialSessions(5);
+                      }}
+                      className={`min-h-[44px] px-3 py-2 rounded-[8px] border text-center transition-colors cursor-pointer ${
+                        stuPaymentType === 'prepaid'
+                          ? 'bg-[#26251e] text-[#f7f7f4] border-[#26251e] font-semibold'
+                          : 'bg-[#ffffff] text-[#5a5852] border-[#cfcdc4]'
+                      }`}
+                    >
+                      <span className="text-[13px] block">پیش‌پرداخت</span>
+                      <span className="text-[10px] opacity-80 block">
+                        دریافت شهریه قبل از کلاس
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStuPaymentType('postpaid');
+                        setStuInitialSessions(0);
+                      }}
+                      className={`min-h-[44px] px-3 py-2 rounded-[8px] border text-center transition-colors cursor-pointer ${
+                        stuPaymentType === 'postpaid'
+                          ? 'bg-[#26251e] text-[#f7f7f4] border-[#26251e] font-semibold'
+                          : 'bg-[#ffffff] text-[#5a5852] border-[#cfcdc4]'
+                      }`}
+                    >
+                      <span className="text-[13px] block">پس‌پرداخت</span>
+                      <span className="text-[10px] opacity-80 block">
+                        تسویه پس از برگزاری جلسات
+                      </span>
+                    </button>
+                  </div>
+
+                  {stuPaymentType === 'postpaid' && (
+                    <div className="pt-2 border-t border-[#e6e5e0] space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[12px] font-semibold text-[#26251e]">
+                          سیکل تسویه دوره پس‌پرداخت:
+                        </span>
+                        <span className="text-[11px] font-mono-code text-[#f54e00] font-semibold">
+                          هر {toPersianDigits(stuPostpaidCycle)} جلسه
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {[1, 4, 5, 8].map((cycle) => (
+                          <button
+                            key={cycle}
+                            type="button"
+                            onClick={() => setStuPostpaidCycle(cycle)}
+                            className={`min-h-[36px] text-[12px] font-mono-code font-semibold rounded-[6px] border cursor-pointer ${
+                              stuPostpaidCycle === cycle
+                                ? 'bg-[#f54e00] text-white border-[#f54e00]'
+                                : 'bg-[#ffffff] text-[#26251e] border-[#cfcdc4]'
+                            }`}
+                          >
+                            {toPersianDigits(cycle)} جلسه
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-[11px] text-[#5a5852] leading-relaxed">
+                        در حالت پس‌پرداخت، تراز اولیه از ۰ شروع می‌شود و با هر جلسه حضور، تعداد جلسات برگزارشده برای تسویه پایان دوره محاسبه می‌گردد.
+                      </p>
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
@@ -2025,7 +2449,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
                   <div>
                     <label className="block text-[13px] font-semibold text-[#26251e] mb-1">
-                      تراز اولیه جلسات (امکان عدد منفی)
+                      {stuPaymentType === 'postpaid'
+                        ? 'تراز اولیه (۰ برای شروع دوره پس‌پرداخت)'
+                        : 'تراز اولیه جلسات پیش‌پرداخت'}
                     </label>
                     <input
                       type="number"
@@ -2041,7 +2467,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
                 <div className="p-3.5 rounded-[8px] bg-[#fafaf7] border border-[#e6e5e0] text-[13px] text-[#5a5852] flex items-center justify-between">
                   <span>
-                    {stuInitialSessions < 0
+                    {stuPaymentType === 'postpaid'
+                      ? `مبلغ هر سیکل تسویه پس‌پرداخت (${toPersianDigits(stuPostpaidCycle)} جلسه):`
+                      : stuInitialSessions < 0
                       ? `بدهی اولیه (${toPersianDigits(Math.abs(stuInitialSessions))} جلسه معوق):`
                       : `مجموع شهریه دوره اولیه (${toPersianDigits(stuInitialSessions)} جلسه):`}
                   </span>
@@ -2050,7 +2478,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                       stuInitialSessions < 0 ? 'text-[#cf2d56]' : 'text-[#26251e]'
                     }`}
                   >
-                    {formatToman(stuTuition * stuInitialSessions)}
+                    {stuPaymentType === 'postpaid'
+                      ? formatToman(stuTuition * stuPostpaidCycle)
+                      : formatToman(stuTuition * stuInitialSessions)}
                   </span>
                 </div>
 
@@ -2066,36 +2496,102 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               </form>
             </div>
 
-            {/* Student Roster & Session Recharge Balance */}
+            {/* Student Roster & Session Recharge / Postpaid Settlement Balance */}
             <div className="lg:col-span-7 space-y-5 sm:space-y-6">
               <div className="border border-[#e6e5e0] bg-[#ffffff] rounded-[12px] overflow-hidden">
-                <div className="px-4 sm:px-6 py-4 border-b border-[#e6e5e0] flex items-center justify-between">
-                  <h2 className="text-[16px] sm:text-[18px] font-semibold text-[#26251e]">
-                    فهرست دانش‌آموزان و تراز جلسات
-                  </h2>
-                  <span className="font-mono-code text-[13px] text-[#807d72]">
-                    {toPersianDigits(filteredStudentsList.length)} دانش‌آموز
-                  </span>
+                <div className="px-4 sm:px-6 py-4 border-b border-[#e6e5e0] space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h2 className="text-[16px] sm:text-[18px] font-semibold text-[#26251e]">
+                      فهرست دانش‌آموزان، ساعات کلاسی و وضعیت تسویه
+                    </h2>
+                    <span className="font-mono-code text-[13px] text-[#807d72]">
+                      {toPersianDigits(filteredStudentsList.length)} دانش‌آموز
+                    </span>
+                  </div>
+
+                  {/* Filter Bar for Prepaid / Postpaid / Needs Settlement */}
+                  <div className="flex flex-wrap items-center gap-1.5 p-1 bg-[#e6e5e0]/70 rounded-[8px]">
+                    {[
+                      { id: 'all', label: `همه (${toPersianDigits(students.length)})` },
+                      {
+                        id: 'prepaid',
+                        label: `پیش‌پرداخت (${toPersianDigits(
+                          students.filter((s) => (s.paymentType || 'prepaid') === 'prepaid')
+                            .length
+                        )})`,
+                      },
+                      {
+                        id: 'postpaid',
+                        label: `پس‌پرداخت (${toPersianDigits(
+                          students.filter((s) => s.paymentType === 'postpaid').length
+                        )})`,
+                      },
+                      {
+                        id: 'due',
+                        label: `نیازمند تسویه / شارژ (${toPersianDigits(
+                          students.filter(
+                            (s) =>
+                              s.sessionsLeft < 0 ||
+                              ((s.paymentType || 'prepaid') === 'prepaid' &&
+                                s.sessionsLeft === 0)
+                          ).length
+                        )})`,
+                      },
+                    ].map((tab) => (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() =>
+                          setStudentPaymentFilter(
+                            tab.id as 'all' | 'prepaid' | 'postpaid' | 'due'
+                          )
+                        }
+                        className={`min-h-[36px] px-3 py-1 text-[12px] font-semibold rounded-[6px] transition-colors cursor-pointer ${
+                          studentPaymentFilter === tab.id
+                            ? 'bg-[#ffffff] text-[#26251e]'
+                            : 'text-[#5a5852] hover:text-[#26251e]'
+                        }`}
+                      >
+                        {tab.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 {/* Mobile Progressive Disclosure Student Cards (< md) */}
                 <div className="md:hidden divide-y divide-[#efeee8]">
                   {filteredStudentsList.map((stu) => {
                     const isNegative = stu.sessionsLeft < 0;
+                    const isPostpaid = stu.paymentType === 'postpaid';
+                    const postpaidCycle = stu.postpaidCycleSessions || 4;
+                    const isPostpaidCycleReached =
+                      isPostpaid && Math.abs(stu.sessionsLeft) >= postpaidCycle && stu.sessionsLeft < 0;
                     const isExpanded = expandedStudentCardId === stu.id;
                     const totalPaidCount =
                       stu.totalSessionsPaid !== undefined
                         ? stu.totalSessionsPaid
                         : stu.totalAttended + stu.sessionsLeft;
+                    const scheduleSummary = formatStudentScheduleSummary(
+                      stu.selectedDays,
+                      stu.classTime,
+                      stu.dayTimes
+                    );
                     return (
                       <div key={stu.id} className="p-4 space-y-3">
                         <div className="flex items-start justify-between gap-2">
                           <div>
-                            <div className="text-[16px] font-semibold text-[#26251e]">
-                              {stu.name}
+                            <div className="flex items-center gap-2">
+                              <span className="text-[16px] font-semibold text-[#26251e]">
+                                {stu.name}
+                              </span>
+                              <span className="text-[11px] font-medium px-2 py-0.5 rounded-[6px] bg-[#fafaf7] border border-[#e6e5e0] text-[#5a5852]">
+                                {isPostpaid
+                                  ? `پس‌پرداخت (هر ${toPersianDigits(postpaidCycle)} جلسه)`
+                                  : 'پیش‌پرداخت'}
+                              </span>
                             </div>
-                            <div className="text-[13px] text-[#807d72]">
-                              {stu.subject} · {stu.intervalLabel}
+                            <div className="text-[13px] text-[#807d72] mt-0.5">
+                              {stu.subject} · {scheduleSummary}
                             </div>
                           </div>
 
@@ -2103,22 +2599,36 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                             {isNegative ? (
                               <div>
                                 <span className="text-[14px] font-semibold text-[#cf2d56] block">
-                                  {formatSignedPersianNumber(stu.sessionsLeft)} جلسه (بدهکار)
+                                  {isPostpaid
+                                    ? `${toPersianDigits(Math.abs(stu.sessionsLeft))} جلسه در انتظار تسویه`
+                                    : `${formatSignedPersianNumber(stu.sessionsLeft)} جلسه (بدهکار)`}
                                 </span>
                                 <span className="text-[11px] text-[#cf2d56] block">
-                                  بدهی: {formatToman(Math.abs(stu.sessionsLeft) * stu.tuitionPerSession)}
+                                  قابل تسویه:{' '}
+                                  {formatToman(
+                                    Math.abs(stu.sessionsLeft) * stu.tuitionPerSession
+                                  )}
                                 </span>
+                                {isPostpaidCycleReached && (
+                                  <span className="text-[11px] font-semibold text-[#f54e00] block">
+                                    موعد تسویه دوره رسیده است
+                                  </span>
+                                )}
                               </div>
                             ) : (
                               <div>
                                 <span
                                   className={`text-[14px] font-semibold block ${
-                                    stu.sessionsLeft <= 1
+                                    stu.sessionsLeft === 0 && isPostpaid
+                                      ? 'text-[#1f8a65]'
+                                      : stu.sessionsLeft <= 1
                                       ? 'text-[#c08532]'
                                       : 'text-[#1f8a65]'
                                   }`}
                                 >
-                                  {toPersianDigits(stu.sessionsLeft)} جلسه باقی‌مانده
+                                  {stu.sessionsLeft === 0 && isPostpaid
+                                    ? 'تسویه کامل (۰ معوق)'
+                                    : `${toPersianDigits(stu.sessionsLeft)} جلسه باقی‌مانده`}
                                 </span>
                               </div>
                             )}
@@ -2145,7 +2655,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                               setRechargingStudent(stu);
                               setRechargeCustomTuition(stu.tuitionPerSession);
                               setRechargeAddCount(
-                                stu.sessionsLeft < 0
+                                isPostpaid
+                                  ? stu.sessionsLeft < 0
+                                    ? Math.abs(stu.sessionsLeft)
+                                    : postpaidCycle
+                                  : stu.sessionsLeft < 0
                                   ? Math.abs(stu.sessionsLeft) + 4
                                   : 4
                               );
@@ -2153,7 +2667,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                             className="min-h-[44px] px-3 bg-[#26251e] text-[#f7f7f4] text-[12px] font-semibold rounded-[8px] flex items-center justify-center gap-1 cursor-pointer"
                           >
                             <RefreshCw className="w-3.5 h-3.5" />
-                            <span>شارژ</span>
+                            <span>{isPostpaid ? 'تسویه پس‌پرداخت' : 'شارژ'}</span>
                           </button>
                           <button
                             type="button"
@@ -2195,10 +2709,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                               </span>
                             </div>
                             <div className="flex justify-between font-mono-code">
-                              <span>ساعت و شروع دوره:</span>
+                              <span>برنامه ساعات هفته:</span>
                               <span className="text-[#26251e]">
-                                ساعت {toPersianDigits(stu.classTime)} · از{' '}
-                                {toPersianDigits(stu.startDate)}
+                                {scheduleSummary}
                               </span>
                             </div>
                             <div className="flex justify-between font-mono-code">
@@ -2230,19 +2743,30 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                     <thead>
                       <tr className="border-b border-[#e6e5e0] bg-[#fafaf7] text-[13px] font-semibold text-[#5a5852]">
                         <th className="py-3 px-4">دانش‌آموز، موبایل و رمز عبور</th>
-                        <th className="py-3 px-4">روزهای هفته و ساعت</th>
-                        <th className="py-3 px-4">شهریه هر جلسه</th>
-                        <th className="py-3 px-4">تراز جلسات (اعتبار)</th>
+                        <th className="py-3 px-4">روزهای هفته و ساعت هر روز</th>
+                        <th className="py-3 px-4">سیستم پرداخت و شهریه</th>
+                        <th className="py-3 px-4">تراز جلسات و وضعیت تسویه</th>
                         <th className="py-3 px-4">عملیات مدیریت</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#efeee8] text-[14px]">
                       {filteredStudentsList.map((stu) => {
                         const isNegative = stu.sessionsLeft < 0;
+                        const isPostpaid = stu.paymentType === 'postpaid';
+                        const postpaidCycle = stu.postpaidCycleSessions || 4;
+                        const isPostpaidCycleReached =
+                          isPostpaid &&
+                          stu.sessionsLeft < 0 &&
+                          Math.abs(stu.sessionsLeft) >= postpaidCycle;
                         const totalPaidCount =
                           stu.totalSessionsPaid !== undefined
                             ? stu.totalSessionsPaid
                             : stu.totalAttended + stu.sessionsLeft;
+                        const scheduleSummary = formatStudentScheduleSummary(
+                          stu.selectedDays,
+                          stu.classTime,
+                          stu.dayTimes
+                        );
                         return (
                           <tr
                             key={stu.id}
@@ -2265,15 +2789,21 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                             </td>
                             <td className="py-3.5 px-4 text-[13px] text-[#5a5852]">
                               <div className="font-medium text-[#26251e]">
-                                {stu.intervalLabel}
+                                {scheduleSummary}
                               </div>
                               <div className="text-[#807d72] font-mono-code mt-0.5">
-                                شروع: {toPersianDigits(stu.startDate)} · ساعت{' '}
-                                {toPersianDigits(stu.classTime)}
+                                شروع دوره: {toPersianDigits(stu.startDate)}
                               </div>
                             </td>
-                            <td className="py-3.5 px-4 whitespace-nowrap font-mono-code font-semibold text-[#26251e]">
-                              {formatToman(stu.tuitionPerSession)}
+                            <td className="py-3.5 px-4 whitespace-nowrap">
+                              <div className="font-mono-code font-semibold text-[#26251e]">
+                                {formatToman(stu.tuitionPerSession)}
+                              </div>
+                              <div className="text-[12px] text-[#5a5852] mt-0.5">
+                                {isPostpaid
+                                  ? `پس‌پرداخت (سیکل ${toPersianDigits(postpaidCycle)} جلسه)`
+                                  : 'پیش‌پرداخت (شارژ قبل از کلاس)'}
+                              </div>
                             </td>
                             <td className="py-3.5 px-4 whitespace-nowrap font-mono-code">
                               {isNegative ? (
@@ -2281,30 +2811,45 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                   <div className="text-[14px] font-semibold text-[#cf2d56] flex items-center gap-1">
                                     <AlertCircle className="w-3.5 h-3.5 shrink-0" />
                                     <span>
-                                      {formatSignedPersianNumber(stu.sessionsLeft)} جلسه (بدهکار)
+                                      {isPostpaid
+                                        ? `${toPersianDigits(
+                                            Math.abs(stu.sessionsLeft)
+                                          )} جلسه در انتظار تسویه پس‌پرداخت`
+                                        : `${formatSignedPersianNumber(
+                                            stu.sessionsLeft
+                                          )} جلسه (بدهکار)`}
                                     </span>
                                   </div>
                                   <div className="text-[12px] text-[#cf2d56]">
-                                    بدهی معوق:{' '}
+                                    مبلغ قابل تسویه:{' '}
                                     {formatToman(
                                       Math.abs(stu.sessionsLeft) *
                                         stu.tuitionPerSession
                                     )}
                                   </div>
+                                  {isPostpaidCycleReached && (
+                                    <div className="text-[11px] font-semibold text-[#f54e00] mt-0.5">
+                                      موعد تسویه سیکل ({toPersianDigits(postpaidCycle)} جلسه) فرا رسیده است
+                                    </div>
+                                  )}
                                   <div className="text-[11px] text-[#807d72] mt-0.5">
-                                    پرداخت‌شده: {toPersianDigits(totalPaidCount)} جلسه · برگزارشده: {toPersianDigits(stu.totalAttended)} جلسه
+                                    تسویه‌شده: {toPersianDigits(totalPaidCount)} جلسه · برگزارشده: {toPersianDigits(stu.totalAttended)} جلسه
                                   </div>
                                 </div>
                               ) : (
                                 <div>
                                   <div
                                     className={`text-[14px] font-semibold ${
-                                      stu.sessionsLeft <= 1
+                                      stu.sessionsLeft === 0 && isPostpaid
+                                        ? 'text-[#1f8a65]'
+                                        : stu.sessionsLeft <= 1
                                         ? 'text-[#c08532]'
                                         : 'text-[#1f8a65]'
                                     }`}
                                   >
-                                    {toPersianDigits(stu.sessionsLeft)} جلسه باقی‌مانده
+                                    {stu.sessionsLeft === 0 && isPostpaid
+                                      ? 'تسویه کامل (۰ جلسه معوق)'
+                                      : `${toPersianDigits(stu.sessionsLeft)} جلسه باقی‌مانده`}
                                   </div>
                                   <div className="text-[12px] text-[#807d72]">
                                     پرداخت‌شده: {toPersianDigits(totalPaidCount)} جلسه · برگزارشده: {toPersianDigits(stu.totalAttended)} جلسه
@@ -2318,7 +2863,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                   type="button"
                                   onClick={() => handleQuickRecordPresentSession(stu)}
                                   className="px-2.5 py-1.5 bg-[#1f8a65] hover:bg-[#176e4f] text-[#ffffff] text-[12px] font-medium rounded-[6px] transition-colors flex items-center gap-1 cursor-pointer"
-                                  title="ثبت حضور یک جلسه جدید و کسر ۱ جلسه از اعتبار (در صورت صفر بودن تراز، بدهکار می‌شود)"
+                                  title="ثبت حضور یک جلسه جدید و کسر ۱ جلسه از اعتبار"
                                 >
                                   <CheckCircle2 className="w-3 h-3" />
                                   <span>+ ثبت حضور (-۱)</span>
@@ -2337,7 +2882,11 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                     setRechargingStudent(stu);
                                     setRechargeCustomTuition(stu.tuitionPerSession);
                                     setRechargeAddCount(
-                                      stu.sessionsLeft < 0
+                                      isPostpaid
+                                        ? stu.sessionsLeft < 0
+                                          ? Math.abs(stu.sessionsLeft)
+                                          : postpaidCycle
+                                        : stu.sessionsLeft < 0
                                         ? Math.abs(stu.sessionsLeft) + 4
                                         : 4
                                     );
@@ -2345,7 +2894,9 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                                   className="px-2.5 py-1.5 bg-[#26251e] hover:bg-[#5a5852] text-[#f7f7f4] text-[12px] font-medium rounded-[6px] transition-colors flex items-center gap-1 cursor-pointer"
                                 >
                                   <RefreshCw className="w-3 h-3" />
-                                  <span>شارژ</span>
+                                  <span>
+                                    {isPostpaid ? 'تسویه پس‌پرداخت' : 'شارژ'}
+                                  </span>
                                 </button>
                                 <button
                                   type="button"
@@ -3079,18 +3630,19 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               <table className="w-full text-right border-collapse">
                 <thead>
                   <tr className="border-b border-[#e6e5e0] bg-[#fafaf7] text-[13px] font-semibold text-[#5a5852]">
-                    <th className="py-3 px-4">نام دانش‌آموز و درس</th>
-                    <th className="py-3 px-4">روزهای کلاس</th>
+                    <th className="py-3 px-4">نام دانش‌آموز و سیستم پرداخت</th>
+                    <th className="py-3 px-4">روزها و ساعات کلاس</th>
                     <th className="py-3 px-4">شهریه هر جلسه</th>
                     <th className="py-3 px-4">جلسات کسرشده در این ماه</th>
                     <th className="py-3 px-4">سود قطعی کسب‌شده در این ماه</th>
-                    <th className="py-3 px-4">تراز فعلی جلسات (اعتبار / بدهی)</th>
+                    <th className="py-3 px-4">تراز فعلی جلسات (اعتبار / تسویه)</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#efeee8] text-[14px]">
                   {monthlyFinanceStats.studentBreakdown.map((row) => {
                     const stu = row.student;
                     const isNeg = stu.sessionsLeft < 0;
+                    const isPostpaid = stu.paymentType === 'postpaid';
                     return (
                       <tr
                         key={stu.id}
@@ -3100,12 +3652,21 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                           <div className="font-semibold text-[#26251e]">
                             {stu.name}
                           </div>
-                          <div className="text-[13px] text-[#807d72]">
-                            {stu.subject}
+                          <div className="text-[12px] text-[#807d72]">
+                            {stu.subject} ·{' '}
+                            {isPostpaid
+                              ? `پس‌پرداخت (هر ${toPersianDigits(
+                                  stu.postpaidCycleSessions || 4
+                                )} جلسه)`
+                              : 'پیش‌پرداخت'}
                           </div>
                         </td>
                         <td className="py-3.5 px-4 text-[13px] text-[#5a5852]">
-                          {stu.intervalLabel}
+                          {formatStudentScheduleSummary(
+                            stu.selectedDays,
+                            stu.classTime,
+                            stu.dayTimes
+                          )}
                         </td>
                         <td className="py-3.5 px-4 font-mono-code text-[#26251e]">
                           {formatToman(stu.tuitionPerSession)}
@@ -3126,12 +3687,19 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                         <td className="py-3.5 px-4 font-mono-code">
                           {isNeg ? (
                             <span className="text-[#cf2d56] font-semibold">
-                              {formatSignedPersianNumber(stu.sessionsLeft)} جلسه (بدهکار:{' '}
-                              {formatToman(row.owedAmount)})
+                              {isPostpaid
+                                ? `${toPersianDigits(
+                                    Math.abs(stu.sessionsLeft)
+                                  )} جلسه پس‌پرداخت (${formatToman(row.owedAmount)})`
+                                : `${formatSignedPersianNumber(
+                                    stu.sessionsLeft
+                                  )} جلسه (بدهکار: ${formatToman(row.owedAmount)})`}
                             </span>
                           ) : (
                             <span className="text-[#1f8a65] font-semibold">
-                              {toPersianDigits(stu.sessionsLeft)} جلسه بستانکار
+                              {stu.sessionsLeft === 0 && isPostpaid
+                                ? 'تسویه کامل (۰ معوق)'
+                                : `${toPersianDigits(stu.sessionsLeft)} جلسه بستانکار`}
                             </span>
                           )}
                         </td>

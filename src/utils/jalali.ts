@@ -247,13 +247,109 @@ export function sanitizeSelectedDays(days: unknown): number[] {
   return valid.length > 0 ? valid : [0];
 }
 
-export function formatWeekdaysLabel(selectedDays: number[]): string {
+export function sanitizeTimeStr(raw: unknown, fallback = '17:00'): string {
+  const str = toEnglishDigits(String(raw || '')).trim();
+  if (/^[0-2][0-9]:[0-5][0-9]$/.test(str)) {
+    return str;
+  }
+  const fb = toEnglishDigits(fallback).trim();
+  return /^[0-2][0-9]:[0-5][0-9]$/.test(fb) ? fb : '17:00';
+}
+
+export function sanitizeDayTimes(
+  rawDayTimes: unknown,
+  selectedDays: number[],
+  fallbackTime = '17:00'
+): Record<string, string> {
+  const cleanDays = sanitizeSelectedDays(selectedDays);
+  const cleanFallback = sanitizeTimeStr(fallbackTime, '17:00');
+  const source =
+    rawDayTimes && typeof rawDayTimes === 'object'
+      ? (rawDayTimes as Record<string, unknown>)
+      : {};
+  const result: Record<string, string> = {};
+  for (const dayIdx of cleanDays) {
+    const key = String(dayIdx);
+    result[key] = sanitizeTimeStr(source[key], cleanFallback);
+  }
+  return result;
+}
+
+export function hasDistinctDayTimes(
+  selectedDays: number[],
+  dayTimes?: Record<string, string>,
+  fallbackTime = '17:00'
+): boolean {
+  const cleanDays = sanitizeSelectedDays(selectedDays);
+  if (!dayTimes || cleanDays.length <= 1) return false;
+  const times = cleanDays.map((d) =>
+    sanitizeTimeStr(dayTimes[String(d)], fallbackTime)
+  );
+  return new Set(times).size > 1;
+}
+
+export function formatWeekdaysLabel(
+  selectedDays: number[],
+  dayTimes?: Record<string, string>,
+  fallbackTime?: string
+): string {
   const clean = sanitizeSelectedDays(selectedDays);
+  const fb = sanitizeTimeStr(fallbackTime || '17:00', '17:00');
+
+  if (dayTimes && hasDistinctDayTimes(clean, dayTimes, fb)) {
+    const parts = clean.map((d) => {
+      const t = sanitizeTimeStr(dayTimes[String(d)], fb);
+      return `${JALALI_WEEKDAYS[d]} (${toPersianDigits(t)})`;
+    });
+    return parts.join('، ');
+  }
+
   const dayNames = clean.map((d) => JALALI_WEEKDAYS[d]);
   if (clean.length === 7) {
     return 'همه روزهای هفته (۷ روز)';
   }
   return `${dayNames.join('، ')} (${toPersianDigits(clean.length)} روز در هفته)`;
+}
+
+export function formatStudentScheduleSummary(
+  selectedDays: number[],
+  classTime: string,
+  dayTimes?: Record<string, string>
+): string {
+  const clean = sanitizeSelectedDays(selectedDays);
+  const fb = sanitizeTimeStr(classTime, '17:00');
+  if (dayTimes && hasDistinctDayTimes(clean, dayTimes, fb)) {
+    return clean
+      .map(
+        (d) =>
+          `${JALALI_WEEKDAYS[d]} ساعت ${toPersianDigits(
+            sanitizeTimeStr(dayTimes[String(d)], fb)
+          )}`
+      )
+      .join(' · ');
+  }
+  const dayNames = clean.map((d) => JALALI_WEEKDAYS[d]).join('، ');
+  return `${dayNames} · ساعت ${toPersianDigits(fb)}`;
+}
+
+export function getTimeForJalaliDate(
+  jalaliStr: string,
+  selectedDays: number[],
+  fallbackTime: string,
+  dayTimes?: Record<string, string>
+): string {
+  const fb = sanitizeTimeStr(fallbackTime, '17:00');
+  if (!dayTimes) return fb;
+  const [jy, jm, jd] = parseJalaliString(jalaliStr);
+  const dow = getJalaliDayOfWeek(jy, jm, jd);
+  const cleanDays = sanitizeSelectedDays(selectedDays);
+  if (dayTimes[String(dow)]) {
+    return sanitizeTimeStr(dayTimes[String(dow)], fb);
+  }
+  if (cleanDays.length > 0 && dayTimes[String(cleanDays[0])]) {
+    return sanitizeTimeStr(dayTimes[String(cleanDays[0])], fb);
+  }
+  return fb;
 }
 
 /**

@@ -1,5 +1,7 @@
 export type IntervalType = 'weekly' | 'twice_weekly' | 'biweekly' | 'custom_days';
 
+export type PaymentSystemType = 'prepaid' | 'postpaid';
+
 export type AttendanceStatus =
   | 'scheduled'
   | 'present'
@@ -24,12 +26,15 @@ export interface Student {
   password: string; // Preset by teacher on creation, editable by teacher
   subject: string;
   startDate: string; // Jalali YYYY/MM/DD
-  classTime: string; // HH:MM
+  classTime: string; // Default/fallback HH:MM
   selectedDays: number[]; // 0..6 (0 = شنبه ... 6 = جمعه) selectable in any combination
+  dayTimes?: Record<string, string>; // Per-weekday HH:MM map, e.g. { "2": "16:00", "6": "10:00" }
+  paymentType?: PaymentSystemType; // 'prepaid' (پیش‌پرداخت) | 'postpaid' (پس‌پرداخت)
+  postpaidCycleSessions?: number; // Target sessions per settlement cycle for postpaid students
   intervalType: IntervalType;
   intervalLabel: string;
   tuitionPerSession: number;
-  sessionsLeft: number; // Can be negative when student delays payment
+  sessionsLeft: number; // Positive = remaining prepaid credit; Negative = owed/unsettled attended sessions
   totalSessionsPaid: number;
   totalAttended: number;
   teacherId: string;

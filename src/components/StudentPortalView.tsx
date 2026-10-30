@@ -26,6 +26,7 @@ import {
   formatToman,
   formatReadableJalali,
   getCurrentJalaliDate,
+  formatStudentScheduleSummary,
 } from '../utils/jalali';
 import { JalaliCalendar } from './JalaliCalendar';
 import type {
@@ -451,6 +452,13 @@ export const StudentPortalView: React.FC<StudentPortalViewProps> = ({
   // Strictly isolated data for this logged-in student only
   const currentStudent = loggedInStudent;
   const isNegativeCredit = currentStudent.sessionsLeft < 0;
+  const isPostpaid = currentStudent.paymentType === 'postpaid';
+  const postpaidCycle = currentStudent.postpaidCycleSessions || 4;
+  const scheduleSummary = formatStudentScheduleSummary(
+    currentStudent.selectedDays,
+    currentStudent.classTime,
+    currentStudent.dayTimes
+  );
   const teacherDisplayName =
     currentStudent.teacherId === 'teacher_ramy'
       ? 'استاد رمی'
@@ -502,7 +510,9 @@ export const StudentPortalView: React.FC<StudentPortalViewProps> = ({
       );
       setPaymentNote('');
       setRechargeSuccessMsg(
-        `درخواست شارژ ${toPersianDigits(requestedSessionsCount)} جلسه با موفقیت ثبت و برای تایید ${teacherDisplayName} ارسال شد.`
+        isPostpaid
+          ? `درخواست تسویه پس‌پرداخت ${toPersianDigits(requestedSessionsCount)} جلسه با موفقیت ثبت و برای تایید ${teacherDisplayName} ارسال شد.`
+          : `درخواست شارژ ${toPersianDigits(requestedSessionsCount)} جلسه با موفقیت ثبت و برای تایید ${teacherDisplayName} ارسال شد.`
       );
     } finally {
       setSubmittingRecharge(false);
@@ -528,31 +538,43 @@ export const StudentPortalView: React.FC<StudentPortalViewProps> = ({
 
   return (
     <div className="space-y-4 sm:space-y-6">
-      {/* Negative Session Credit Alert Banner if student delayed payment */}
+      {/* Negative Session Credit / Postpaid Settlement Alert Banner */}
       {isNegativeCredit && (
         <div className="border border-[#cf2d56]/40 bg-[#cf2d56]/5 rounded-[12px] p-3.5 sm:p-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-start sm:items-center gap-2.5 text-[13px] text-[#cf2d56]">
             <AlertCircle className="w-5 h-5 shrink-0 mt-0.5 sm:mt-0" />
             <div>
               <span className="font-semibold">
-                تراز جلسات شما منفی است ({formatSignedPersianNumber(currentStudent.sessionsLeft)} جلسه — بدهی:{' '}
-                {formatToman(
-                  Math.abs(currentStudent.sessionsLeft) *
-                    currentStudent.tuitionPerSession
-                )}
-                ):{' '}
+                {isPostpaid
+                  ? `حساب پس‌پرداخت: ${toPersianDigits(
+                      Math.abs(currentStudent.sessionsLeft)
+                    )} جلسه برگزارشده در انتظار تسویه (${formatToman(
+                      Math.abs(currentStudent.sessionsLeft) *
+                        currentStudent.tuitionPerSession
+                    )}): `
+                  : `تراز جلسات شما منفی است (${formatSignedPersianNumber(
+                      currentStudent.sessionsLeft
+                    )} جلسه — بدهی: ${formatToman(
+                      Math.abs(currentStudent.sessionsLeft) *
+                        currentStudent.tuitionPerSession
+                    )}): `}
               </span>
               <span className="hidden sm:inline">
-                در صورت شارژ مجدد حساب، تعداد جلسات معوق به صورت خودکار از شارژ جدید شما کسر خواهد شد.
+                {isPostpaid
+                  ? `سیکل تسویه شما هر ${toPersianDigits(postpaidCycle)} جلسه است. از دکمه مقابل می‌توانید ثبت واریز تسویه را ارسال کنید.`
+                  : 'در صورت شارژ مجدد حساب، تعداد جلسات معوق به صورت خودکار از شارژ جدید شما کسر خواهد شد.'}
               </span>
             </div>
           </div>
           <button
             type="button"
-            onClick={() => setActiveSubTab('recharge')}
+            onClick={() => {
+              setRequestedSessionsCount(Math.abs(currentStudent.sessionsLeft));
+              setActiveSubTab('recharge');
+            }}
             className="min-h-[44px] px-4 bg-[#cf2d56] text-white text-[13px] font-semibold rounded-[8px] cursor-pointer shrink-0 w-full sm:w-auto"
           >
-            شارژ حساب و تسویه
+            {isPostpaid ? 'ثبت تسویه پس‌پرداخت' : 'شارژ حساب و تسویه'}
           </button>
         </div>
       )}
@@ -562,9 +584,11 @@ export const StudentPortalView: React.FC<StudentPortalViewProps> = ({
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
             <div className="text-[12px] sm:text-[13px] text-[#807d72] mb-1">
-              {teacherDisplayName} · {currentStudent.intervalLabel} · ساعت{' '}
-              <span className="font-mono-code">
-                {toPersianDigits(currentStudent.classTime)}
+              {teacherDisplayName} · {scheduleSummary} ·{' '}
+              <span className="font-semibold text-[#26251e]">
+                {isPostpaid
+                  ? `حساب پس‌پرداخت (هر ${toPersianDigits(postpaidCycle)} جلسه)`
+                  : 'حساب پیش‌پرداخت'}
               </span>
             </div>
             <h1 className="text-[20px] sm:text-[26px] font-semibold sm:font-normal tracking-[-0.325px] text-[#26251e] truncate">
@@ -580,10 +604,15 @@ export const StudentPortalView: React.FC<StudentPortalViewProps> = ({
           <div className="flex items-center gap-2 w-full sm:w-auto">
             <button
               type="button"
-              onClick={() => setActiveSubTab('recharge')}
+              onClick={() => {
+                if (isPostpaid && currentStudent.sessionsLeft < 0) {
+                  setRequestedSessionsCount(Math.abs(currentStudent.sessionsLeft));
+                }
+                setActiveSubTab('recharge');
+              }}
               className="flex-1 sm:flex-initial min-h-[44px] px-4 py-2.5 bg-[#f54e00] hover:bg-[#d04200] active:bg-[#d04200] text-[#ffffff] text-[14px] font-semibold rounded-[8px] transition-colors whitespace-nowrap cursor-pointer"
             >
-              + شارژ اعتبار جلسات
+              {isPostpaid ? 'تسویه حساب پس‌پرداخت' : '+ شارژ اعتبار جلسات'}
             </button>
             <button
               type="button"
@@ -619,6 +648,10 @@ export const StudentPortalView: React.FC<StudentPortalViewProps> = ({
                 </span>
               </div>
               <div className="flex justify-between">
+                <span>برنامه ساعات هفته:</span>
+                <span className="text-[#26251e]">{scheduleSummary}</span>
+              </div>
+              <div className="flex justify-between">
                 <span>تاریخ شروع:</span>
                 <span className="text-[#26251e]">
                   {toPersianDigits(currentStudent.startDate)}
@@ -639,27 +672,34 @@ export const StudentPortalView: React.FC<StudentPortalViewProps> = ({
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <div className="border border-[#e6e5e0] bg-[#ffffff] rounded-[12px] p-4 sm:p-5">
           <div className="text-[12px] sm:text-[13px] text-[#807d72] mb-1">
-            تراز جلسات (اعتبار)
+            {isPostpaid ? 'وضعیت حساب پس‌پرداخت' : 'تراز جلسات (اعتبار)'}
           </div>
           <div
             className={`text-[20px] sm:text-[26px] font-semibold sm:font-normal font-mono-code ${
               currentStudent.sessionsLeft < 0
                 ? 'text-[#cf2d56]'
+                : currentStudent.sessionsLeft === 0 && isPostpaid
+                ? 'text-[#1f8a65]'
                 : currentStudent.sessionsLeft <= 1
                 ? 'text-[#c08532]'
                 : 'text-[#26251e]'
             }`}
           >
-            {formatSignedPersianNumber(currentStudent.sessionsLeft)} جلسه
-            {currentStudent.sessionsLeft < 0 ? ' (بدهکار)' : ''}
+            {isPostpaid && currentStudent.sessionsLeft < 0
+              ? `${toPersianDigits(Math.abs(currentStudent.sessionsLeft))} جلسه معوق`
+              : isPostpaid && currentStudent.sessionsLeft === 0
+              ? 'تسویه کامل'
+              : `${formatSignedPersianNumber(currentStudent.sessionsLeft)} جلسه${
+                  currentStudent.sessionsLeft < 0 ? ' (بدهکار)' : ''
+                }`}
           </div>
           <div className="text-[11px] sm:text-[13px] text-[#807d72] mt-1 font-mono-code truncate">
             {currentStudent.sessionsLeft < 0
-              ? `${formatToman(
+              ? `قابل تسویه: ${formatToman(
                   Math.abs(currentStudent.sessionsLeft) *
                     currentStudent.tuitionPerSession
-                )} بدهی`
-              : `از ${toPersianDigits(currentStudent.totalSessionsPaid)} جلسه پرداخت‌شده`}
+                )}`
+              : `پرداخت‌شده: ${toPersianDigits(currentStudent.totalSessionsPaid)} جلسه`}
           </div>
         </div>
 

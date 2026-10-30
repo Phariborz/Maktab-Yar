@@ -6,6 +6,8 @@ import {
   formatSignedPersianNumber,
   formatReadableJalali,
   sanitizeSelectedDays,
+  sanitizeDayTimes,
+  getTimeForJalaliDate,
   formatWeekdaysLabel,
   generateSessionDatesByWeekdays,
 } from './jalali';
@@ -17,6 +19,7 @@ import type {
   AppNotification,
   ServerStateSnapshot,
   IntervalType,
+  PaymentSystemType,
 } from '../types';
 
 const STORAGE_KEY = 'maktabyar_static_state_v2';
@@ -420,7 +423,26 @@ async function handleStaticApiRequest(
   if (path === '/api/students' && method === 'POST') {
     const phone = normalizePhone(String(bodyObj.phone || ''));
     const cleanDays = sanitizeSelectedDays(bodyObj.selectedDays);
-    const initialSessionsLeft = Number(bodyObj.sessionsLeft) || 0;
+    const cleanTime = toEnglishDigits(String(bodyObj.classTime || '17:00'));
+    const cleanDayTimes = sanitizeDayTimes(
+      bodyObj.dayTimes,
+      cleanDays,
+      cleanTime
+    );
+    const primaryTime = cleanDayTimes[String(cleanDays[0])] || cleanTime;
+    const paymentType: PaymentSystemType =
+      bodyObj.paymentType === 'postpaid' ? 'postpaid' : 'prepaid';
+    const postpaidCycleSessions = Math.max(
+      1,
+      Math.min(50, Number(bodyObj.postpaidCycleSessions) || 4)
+    );
+    const initialSessionsLeft =
+      bodyObj.sessionsLeft !== undefined && !isNaN(Number(bodyObj.sessionsLeft))
+        ? Number(bodyObj.sessionsLeft)
+        : paymentType === 'postpaid'
+        ? 0
+        : 5;
+
     const newStudent: Student = {
       id: `stu_${Date.now()}`,
       name: String(bodyObj.name || '').trim(),
@@ -428,10 +450,13 @@ async function handleStaticApiRequest(
       password: String(bodyObj.password || '123456').trim(),
       subject: String(bodyObj.subject || '').trim(),
       startDate: toEnglishDigits(String(bodyObj.startDate || today.formatted)),
-      classTime: toEnglishDigits(String(bodyObj.classTime || '17:00')),
+      classTime: primaryTime,
       selectedDays: cleanDays,
+      dayTimes: cleanDayTimes,
+      paymentType,
+      postpaidCycleSessions,
       intervalType: (bodyObj.intervalType as IntervalType) || 'custom_days',
-      intervalLabel: formatWeekdaysLabel(cleanDays),
+      intervalLabel: formatWeekdaysLabel(cleanDays, cleanDayTimes, primaryTime),
       tuitionPerSession: Number(bodyObj.tuitionPerSession) || 500000,
       sessionsLeft: initialSessionsLeft,
       totalSessionsPaid: Math.max(0, initialSessionsLeft),
@@ -442,10 +467,16 @@ async function handleStaticApiRequest(
     };
     state.students.unshift(newStudent);
 
+    const targetGenCount =
+      initialSessionsLeft > 0
+        ? initialSessionsLeft
+        : paymentType === 'postpaid'
+        ? postpaidCycleSessions
+        : 3;
     const dates = generateSessionDatesByWeekdays(
       newStudent.startDate,
       cleanDays,
-      Math.min(Math.max(initialSessionsLeft > 0 ? initialSessionsLeft : 3, 2), 8)
+      Math.min(Math.max(targetGenCount, 2), 8)
     );
     const createdSessions: ClassSession[] = dates.map((d, i) => ({
       id: `sess_${Date.now()}_${i}`,
@@ -454,7 +485,7 @@ async function handleStaticApiRequest(
       studentPhone: newStudent.phone,
       subject: newStudent.subject,
       jalaliDate: d,
-      time: newStudent.classTime,
+      time: getTimeForJalaliDate(d, cleanDays, primaryTime, cleanDayTimes),
       attendanceStatus: 'scheduled',
       grade: -1,
       topic: `جلسه ${toPersianDigits(i + 1)} — ${newStudent.subject}`,
@@ -488,7 +519,31 @@ async function handleStaticApiRequest(
       stu.classTime = toEnglishDigits(String(bodyObj.classTime));
     if (bodyObj.selectedDays) {
       stu.selectedDays = sanitizeSelectedDays(bodyObj.selectedDays);
-      stu.intervalLabel = formatWeekdaysLabel(stu.selectedDays);
+    }
+    if (bodyObj.dayTimes || bodyObj.selectedDays || bodyObj.classTime) {
+      stu.dayTimes = sanitizeDayTimes(
+        bodyObj.dayTimes || stu.dayTimes,
+        stu.selectedDays,
+        stu.classTime
+      );
+      const firstKey = String(stu.selectedDays[0] ?? 0);
+      if (stu.dayTimes[firstKey]) {
+        stu.classTime = stu.dayTimes[firstKey];
+      }
+      stu.intervalLabel = formatWeekdaysLabel(
+        stu.selectedDays,
+        stu.dayTimes,
+        stu.classTime
+      );
+    }
+    if (bodyObj.paymentType === 'prepaid' || bodyObj.paymentType === 'postpaid') {
+      stu.paymentType = bodyObj.paymentType;
+    }
+    if (bodyObj.postpaidCycleSessions !== undefined) {
+      stu.postpaidCycleSessions = Math.max(
+        1,
+        Math.min(50, Number(bodyObj.postpaidCycleSessions) || 4)
+      );
     }
     if (bodyObj.tuitionPerSession !== undefined)
       stu.tuitionPerSession = Number(bodyObj.tuitionPerSession);
@@ -505,6 +560,16 @@ async function handleStaticApiRequest(
       stu.sessionsLeft = stu.totalSessionsPaid - stu.totalAttended;
     }
     stu.updatedAt = nowIso;
+    for (const sess of state.sessions) {
+      if (sess.studentId === stu.id && sess.attendanceStatus === 'scheduled') {
+        sess.time = getTimeForJalaliDate(
+          sess.jalaliDate,
+          stu.selectedDays,
+          stu.classTime,
+          stu.dayTimes
+        );
+      }
+    }
     saveStaticState(state);
     window.dispatchEvent(
       new CustomEvent('maktabyar:static-sync', {
@@ -667,7 +732,12 @@ async function handleStaticApiRequest(
           studentPhone: stu.phone,
           subject: stu.subject,
           jalaliDate: nextDate,
-          time: stu.classTime,
+          time: getTimeForJalaliDate(
+            nextDate,
+            stu.selectedDays,
+            stu.classTime,
+            stu.dayTimes
+          ),
           attendanceStatus: 'scheduled',
           grade: -1,
           topic: `جلسه ${toPersianDigits(stuSessions.length + 1)} — ${stu.subject}`,

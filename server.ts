@@ -14,6 +14,8 @@ import {
   formatSignedPersianNumber,
   formatReadableJalali,
   sanitizeSelectedDays,
+  sanitizeDayTimes,
+  getTimeForJalaliDate,
   formatWeekdaysLabel,
   generateSessionDatesByWeekdays,
 } from './src/utils/jalali.ts';
@@ -26,6 +28,7 @@ import type {
   ServerStateSnapshot,
   WsEventMessage,
   IntervalType,
+  PaymentSystemType,
 } from './src/types.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -412,12 +415,15 @@ function buildInitialSeedState(): ServerStateSnapshot {
       subject: 'فیزیک پایه دوازدهم و کنکور',
       startDate: addJalaliDays(today.formatted, -21),
       classTime: '18:00',
-      selectedDays: [1, 4], // یکشنبه، چهارشنبه
+      selectedDays: [2, 6], // دوشنبه، جمعه (ساعت‌های متفاوت)
+      dayTimes: { '2': '16:00', '6': '10:00' },
+      paymentType: 'postpaid',
+      postpaidCycleSessions: 4,
       intervalType: 'custom_days',
-      intervalLabel: formatWeekdaysLabel([1, 4]),
+      intervalLabel: formatWeekdaysLabel([2, 6], { '2': '16:00', '6': '10:00' }, '18:00'),
       tuitionPerSession: 580000,
-      sessionsLeft: -1,
-      totalSessionsPaid: 4,
+      sessionsLeft: -2,
+      totalSessionsPaid: 3,
       totalAttended: 5,
       teacherId,
       createdAt: nowIso,
@@ -1350,6 +1356,9 @@ async function startServer() {
       startDate,
       classTime,
       selectedDays: rawSelectedDays,
+      dayTimes: rawDayTimes,
+      paymentType: rawPaymentType,
+      postpaidCycleSessions: rawPostpaidCycle,
       intervalType,
       intervalLabel,
       tuitionPerSession,
@@ -1384,16 +1393,33 @@ async function startServer() {
     const today = getCurrentJalaliDate();
     const nowIso = new Date().toISOString();
     const cleanStart = toEnglishDigits(String(startDate || today.formatted)).trim();
-    const cleanTime = toEnglishDigits(String(classTime || '17:00')).trim();
     const cleanSelectedDays = sanitizeSelectedDays(rawSelectedDays);
+    const cleanTime = toEnglishDigits(String(classTime || '17:00')).trim();
+    const cleanDayTimes = sanitizeDayTimes(
+      rawDayTimes,
+      cleanSelectedDays,
+      cleanTime
+    );
+    const primaryTime =
+      cleanDayTimes[String(cleanSelectedDays[0])] || cleanTime;
+
     const computedIntervalLabel =
-      formatWeekdaysLabel(cleanSelectedDays) ||
+      formatWeekdaysLabel(cleanSelectedDays, cleanDayTimes, primaryTime) ||
       String(intervalLabel || 'هفتگی').slice(0, 80);
 
-    const initialSessionsLeft = Math.max(
-      -500,
-      Math.min(1000, Number(sessionsLeft) || 0)
+    const paymentType: PaymentSystemType =
+      rawPaymentType === 'postpaid' ? 'postpaid' : 'prepaid';
+    const postpaidCycleSessions = Math.max(
+      1,
+      Math.min(50, Number(rawPostpaidCycle) || 4)
     );
+
+    const initialSessionsLeft =
+      sessionsLeft !== undefined && !isNaN(Number(sessionsLeft))
+        ? Math.max(-500, Math.min(1000, Number(sessionsLeft)))
+        : paymentType === 'postpaid'
+        ? 0
+        : 5;
     const totalPaid = Math.max(0, initialSessionsLeft);
     const tuition = Math.max(0, Number(tuitionPerSession) || 500000);
 
@@ -1404,10 +1430,13 @@ async function startServer() {
       password: password.slice(0, 100),
       subject: String(subject).trim().slice(0, 100),
       startDate: cleanStart,
-      classTime: cleanTime,
+      classTime: primaryTime,
       selectedDays: cleanSelectedDays,
+      dayTimes: cleanDayTimes,
+      paymentType,
+      postpaidCycleSessions,
       intervalType: (intervalType as IntervalType) || 'custom_days',
-      intervalLabel: computedIntervalLabel.slice(0, 80),
+      intervalLabel: computedIntervalLabel.slice(0, 120),
       tuitionPerSession: tuition,
       sessionsLeft: initialSessionsLeft,
       totalSessionsPaid: totalPaid,
@@ -1424,10 +1453,13 @@ async function startServer() {
       activeTeacher.id
     );
 
-    const sessionsToGenerate = Math.min(
-      Math.max(initialSessionsLeft > 0 ? initialSessionsLeft : 3, 2),
-      8
-    );
+    const targetGenCount =
+      initialSessionsLeft > 0
+        ? initialSessionsLeft
+        : paymentType === 'postpaid'
+        ? postpaidCycleSessions
+        : 3;
+    const sessionsToGenerate = Math.min(Math.max(targetGenCount, 2), 8);
     const scheduledDates = generateSessionDatesByWeekdays(
       cleanStart,
       cleanSelectedDays,
@@ -1436,6 +1468,12 @@ async function startServer() {
     const createdSessions: ClassSession[] = [];
 
     scheduledDates.forEach((sessionDate, i) => {
+      const resolvedTime = getTimeForJalaliDate(
+        sessionDate,
+        cleanSelectedDays,
+        primaryTime,
+        cleanDayTimes
+      );
       const sess: ClassSession = {
         id: `sess_${Date.now()}_${i}`,
         studentId: newStudent.id,
@@ -1443,7 +1481,7 @@ async function startServer() {
         studentPhone: newStudent.phone,
         subject: newStudent.subject,
         jalaliDate: sessionDate,
-        time: cleanTime,
+        time: resolvedTime,
         attendanceStatus: 'scheduled',
         grade: -1,
         topic: `جلسه ${toPersianDigits(i + 1)} — ${newStudent.subject}`,
@@ -1461,13 +1499,18 @@ async function startServer() {
       );
     });
 
+    const paymentTypeLabel =
+      paymentType === 'postpaid'
+        ? `پس‌پرداخت (تسویه هر ${toPersianDigits(postpaidCycleSessions)} جلسه)`
+        : `پیش‌پرداخت (اعتبار ${formatSignedPersianNumber(initialSessionsLeft)} جلسه)`;
+
     const notif: AppNotification = {
       id: `notif_${Date.now()}`,
       targetRole: 'student',
       targetStudentId: newStudent.id,
       type: 'session_reminder',
       title: `خوش آمدید به کلاس ${newStudent.subject}`,
-      body: `برنامه کلاسی شما توسط ${activeTeacher.name} در روزهای (${newStudent.intervalLabel}) ساعت ${toPersianDigits(cleanTime)} با اعتبار ${formatSignedPersianNumber(initialSessionsLeft)} جلسه ثبت شد.`,
+      body: `برنامه کلاسی شما توسط ${activeTeacher.name} در روزهای (${newStudent.intervalLabel}) به صورت ${paymentTypeLabel} ثبت شد.`,
       jalaliTime: `${today.weekdayName} — اکنون`,
       isRead: false,
       teacherId: activeTeacher.id,
@@ -1505,6 +1548,9 @@ async function startServer() {
       startDate,
       classTime,
       selectedDays: rawSelectedDays,
+      dayTimes: rawDayTimes,
+      paymentType: rawPaymentType,
+      postpaidCycleSessions: rawPostpaidCycle,
       tuitionPerSession,
       sessionsLeft,
       totalSessionsPaid,
@@ -1555,10 +1601,34 @@ async function startServer() {
       student.classTime = toEnglishDigits(String(classTime)).trim();
     }
     if (rawSelectedDays !== undefined) {
-      const cleanDays = sanitizeSelectedDays(rawSelectedDays);
-      student.selectedDays = cleanDays;
+      student.selectedDays = sanitizeSelectedDays(rawSelectedDays);
       student.intervalType = 'custom_days';
-      student.intervalLabel = formatWeekdaysLabel(cleanDays).slice(0, 80);
+    }
+    if (rawDayTimes !== undefined || rawSelectedDays !== undefined || classTime !== undefined) {
+      const updatedDayTimes = sanitizeDayTimes(
+        rawDayTimes !== undefined ? rawDayTimes : student.dayTimes,
+        student.selectedDays,
+        student.classTime
+      );
+      student.dayTimes = updatedDayTimes;
+      const firstDayKey = String(student.selectedDays[0] ?? 0);
+      if (updatedDayTimes[firstDayKey]) {
+        student.classTime = updatedDayTimes[firstDayKey];
+      }
+      student.intervalLabel = formatWeekdaysLabel(
+        student.selectedDays,
+        student.dayTimes,
+        student.classTime
+      ).slice(0, 120);
+    }
+    if (rawPaymentType === 'prepaid' || rawPaymentType === 'postpaid') {
+      student.paymentType = rawPaymentType;
+    }
+    if (rawPostpaidCycle !== undefined && !isNaN(Number(rawPostpaidCycle))) {
+      student.postpaidCycleSessions = Math.max(
+        1,
+        Math.min(50, Number(rawPostpaidCycle))
+      );
     }
     if (tuitionPerSession !== undefined) {
       student.tuitionPerSession = Math.max(0, Number(tuitionPerSession) || 0);
@@ -1597,6 +1667,15 @@ async function startServer() {
         sess.studentName = student.name;
         sess.studentPhone = student.phone;
         sess.subject = student.subject;
+        // Also update upcoming scheduled session times when per-weekday times change
+        if (sess.attendanceStatus === 'scheduled') {
+          sess.time = getTimeForJalaliDate(
+            sess.jalaliDate,
+            student.selectedDays,
+            student.classTime,
+            student.dayTimes
+          );
+        }
         broadcastScoped(
           { type: 'session:updated', payload: sess },
           student.id,
@@ -1927,6 +2006,12 @@ async function startServer() {
         );
         const nextDate = nextDates[0] || addJalaliDays(lastDate, 3);
         const nextSessionNumber = studentSessions.length + 1;
+        const nextSessionTime = getTimeForJalaliDate(
+          nextDate,
+          student.selectedDays,
+          student.classTime,
+          student.dayTimes
+        );
         autoCreatedSession = {
           id: `sess_${Date.now()}_auto`,
           studentId: student.id,
@@ -1934,7 +2019,7 @@ async function startServer() {
           studentPhone: student.phone,
           subject: student.subject,
           jalaliDate: nextDate,
-          time: student.classTime,
+          time: nextSessionTime,
           attendanceStatus: 'scheduled',
           grade: -1,
           topic: `جلسه ${toPersianDigits(nextSessionNumber)} — ${student.subject}`,

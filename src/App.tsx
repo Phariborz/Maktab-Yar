@@ -30,6 +30,7 @@ import type {
   WsEventMessage,
   IntervalType,
   AttendanceStatus,
+  PaymentSystemType,
 } from './types';
 
 export default function App() {
@@ -332,10 +333,13 @@ export default function App() {
     startDate: string;
     classTime: string;
     selectedDays: number[];
+    dayTimes?: Record<string, string>;
     intervalType: IntervalType;
     intervalLabel: string;
     tuitionPerSession: number;
     sessionsLeft: number;
+    paymentType?: PaymentSystemType;
+    postpaidCycleSessions?: number;
   }) => {
     if (!teacherToken) throw new Error('عدم دسترسی استاد.');
     const res = await fetch('/api/students', {
@@ -405,10 +409,13 @@ export default function App() {
       startDate: string;
       classTime: string;
       selectedDays: number[];
+      dayTimes?: Record<string, string>;
       tuitionPerSession: number;
       sessionsLeft: number;
       totalSessionsPaid?: number;
       totalAttended?: number;
+      paymentType?: PaymentSystemType;
+      postpaidCycleSessions?: number;
     }
   ) => {
     if (!teacherToken) throw new Error('عدم دسترسی استاد.');
