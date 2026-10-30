@@ -11,7 +11,10 @@ import {
   syncMessageToFirestore,
   syncNotificationToFirestore,
 } from './firebase';
-import { getCurrentJalaliDate } from './utils/jalali';
+import {
+  getCurrentJalaliDate,
+  syncAllStudentsScheduledSessions,
+} from './utils/jalali';
 import { TeacherDashboard, type TeacherTab } from './components/TeacherDashboard';
 import {
   TeacherLoginView,
@@ -144,11 +147,21 @@ export default function App() {
   }, []);
 
   const applySnapshot = useCallback((snap: ServerStateSnapshot) => {
-    setStudents(snap.students || []);
-    setSessions(snap.sessions || []);
-    setRechargeRequests(snap.rechargeRequests || []);
-    setMessages(snap.messages || []);
-    setNotifications(snap.notifications || []);
+    const clonedSnap: ServerStateSnapshot = {
+      students: snap.students ? [...snap.students] : [],
+      sessions: snap.sessions ? [...snap.sessions] : [],
+      rechargeRequests: snap.rechargeRequests ? [...snap.rechargeRequests] : [],
+      messages: snap.messages ? [...snap.messages] : [],
+      notifications: snap.notifications ? [...snap.notifications] : [],
+    };
+    // Ensure any student with multi-month paid sessions (e.g., 14 sessions from Mehr into Aban)
+    // has all their scheduled sessions populated in the UI calendar
+    syncAllStudentsScheduledSessions(clonedSnap);
+    setStudents(clonedSnap.students);
+    setSessions(clonedSnap.sessions);
+    setRechargeRequests(clonedSnap.rechargeRequests);
+    setMessages(clonedSnap.messages);
+    setNotifications(clonedSnap.notifications);
   }, []);
 
   // Validate saved session token on mount / refresh and load latest server/static state
@@ -567,6 +580,20 @@ export default function App() {
         prev.map((s) => (s.id === data.student.id ? data.student : s))
       );
     }
+    if (Array.isArray(data.studentSessions)) {
+      setSessions((prev) => [
+        ...prev.filter((s) => s.studentId !== studentId),
+        ...data.studentSessions,
+      ]);
+    } else if (Array.isArray(data.createdSessions) && data.createdSessions.length > 0) {
+      setSessions((prev) => {
+        const existingIds = new Set(prev.map((s) => s.id));
+        const newOnes = data.createdSessions.filter(
+          (s: ClassSession) => !existingIds.has(s.id)
+        );
+        return [...prev, ...newOnes];
+      });
+    }
 
     if (authReady && firebaseUser && data.student) {
       try {
@@ -574,6 +601,14 @@ export default function App() {
           { ...data.student, teacherId: firebaseUser.uid },
           false
         );
+        if (Array.isArray(data.createdSessions)) {
+          for (const sess of data.createdSessions) {
+            await syncSessionToFirestore(
+              { ...sess, teacherId: firebaseUser.uid },
+              true
+            );
+          }
+        }
       } catch {
         // Ignore cloud backup error
       }
@@ -606,6 +641,15 @@ export default function App() {
           prev.map((s) => (s.id === data.student.id ? data.student : s))
         );
       }
+      if (Array.isArray(data.createdSessions) && data.createdSessions.length > 0) {
+        setSessions((prev) => {
+          const existingIds = new Set(prev.map((s) => s.id));
+          const newOnes = data.createdSessions.filter(
+            (s: ClassSession) => !existingIds.has(s.id)
+          );
+          return [...prev, ...newOnes];
+        });
+      }
       if (data.rechargeRecord) {
         setRechargeRequests((prev) =>
           prev.some((r) => r.id === data.rechargeRecord.id)
@@ -620,6 +664,14 @@ export default function App() {
               { ...data.student, teacherId: firebaseUser.uid },
               false
             );
+          }
+          if (Array.isArray(data.createdSessions)) {
+            for (const sess of data.createdSessions) {
+              await syncSessionToFirestore(
+                { ...sess, teacherId: firebaseUser.uid },
+                true
+              );
+            }
           }
           if (data.rechargeRecord) {
             await syncRechargeToFirestore(
@@ -858,6 +910,15 @@ export default function App() {
           prev.map((s) => (s.id === data.student.id ? data.student : s))
         );
       }
+      if (Array.isArray(data.createdSessions) && data.createdSessions.length > 0) {
+        setSessions((prev) => {
+          const existingIds = new Set(prev.map((s) => s.id));
+          const newOnes = data.createdSessions.filter(
+            (s: ClassSession) => !existingIds.has(s.id)
+          );
+          return [...prev, ...newOnes];
+        });
+      }
       if (authReady && firebaseUser) {
         try {
           await syncRechargeToFirestore(
@@ -869,6 +930,14 @@ export default function App() {
               { ...data.student, teacherId: firebaseUser.uid },
               false
             );
+          }
+          if (Array.isArray(data.createdSessions)) {
+            for (const sess of data.createdSessions) {
+              await syncSessionToFirestore(
+                { ...sess, teacherId: firebaseUser.uid },
+                true
+              );
+            }
           }
           if (data.notification) {
             await syncNotificationToFirestore(

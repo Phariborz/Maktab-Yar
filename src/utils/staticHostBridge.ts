@@ -12,6 +12,8 @@ import {
   generateSessionDatesByWeekdays,
   sanitizePostpaidCycleType,
   calculatePostpaidCycleSessions,
+  syncStudentScheduledSessions,
+  syncAllStudentsScheduledSessions,
 } from './jalali';
 import type {
   Student,
@@ -214,6 +216,10 @@ function loadStaticState(): ServerStateSnapshot {
     if (raw) {
       const parsed = JSON.parse(raw) as ServerStateSnapshot;
       if (parsed && Array.isArray(parsed.students)) {
+        const autoCreated = syncAllStudentsScheduledSessions(parsed);
+        if (autoCreated.length > 0) {
+          saveStaticState(parsed);
+        }
         return parsed;
       }
     }
@@ -221,6 +227,7 @@ function loadStaticState(): ServerStateSnapshot {
     // ignore
   }
   const seed = buildStaticInitialSeed();
+  syncAllStudentsScheduledSessions(seed);
   saveStaticState(seed);
   return seed;
 }
@@ -562,34 +569,10 @@ async function handleStaticApiRequest(
     };
     state.students.unshift(newStudent);
 
-    const targetGenCount =
-      initialSessionsLeft > 0
-        ? initialSessionsLeft
-        : paymentType === 'postpaid'
-        ? postpaidCycleSessions
-        : 3;
-    const dates = generateSessionDatesByWeekdays(
-      newStudent.startDate,
-      cleanDays,
-      Math.min(Math.max(targetGenCount, 2), 8)
+    const createdSessions = syncStudentScheduledSessions(
+      newStudent,
+      state.sessions
     );
-    const createdSessions: ClassSession[] = dates.map((d, i) => ({
-      id: `sess_${Date.now()}_${i}`,
-      studentId: newStudent.id,
-      studentName: newStudent.name,
-      studentPhone: newStudent.phone,
-      subject: newStudent.subject,
-      jalaliDate: d,
-      time: getTimeForJalaliDate(d, cleanDays, primaryTime, cleanDayTimes),
-      attendanceStatus: 'scheduled',
-      grade: -1,
-      topic: `جلسه ${toPersianDigits(i + 1)} — ${newStudent.subject}`,
-      teacherNote: '',
-      teacherId: activeTeacher.id,
-      createdAt: nowIso,
-      updatedAt: nowIso,
-    }));
-    state.sessions.push(...createdSessions);
     saveStaticState(state);
     window.dispatchEvent(
       new CustomEvent('maktabyar:static-sync', {
@@ -672,22 +655,39 @@ async function handleStaticApiRequest(
     }
     stu.updatedAt = nowIso;
     for (const sess of state.sessions) {
-      if (sess.studentId === stu.id && sess.attendanceStatus === 'scheduled') {
-        sess.time = getTimeForJalaliDate(
-          sess.jalaliDate,
-          stu.selectedDays,
-          stu.classTime,
-          stu.dayTimes
-        );
+      if (sess.studentId === stu.id) {
+        sess.studentName = stu.name;
+        sess.studentPhone = stu.phone;
+        sess.subject = stu.subject;
+        if (sess.attendanceStatus === 'scheduled') {
+          sess.time = getTimeForJalaliDate(
+            sess.jalaliDate,
+            stu.selectedDays,
+            stu.classTime,
+            stu.dayTimes
+          );
+        }
       }
     }
+    const shouldRescheduleUnheld =
+      bodyObj.selectedDays !== undefined || bodyObj.startDate !== undefined;
+    const createdSessions = syncStudentScheduledSessions(stu, state.sessions, {
+      rescheduleUnheld: shouldRescheduleUnheld,
+    });
+    const studentSessions = state.sessions.filter(
+      (s) => s.studentId === stu.id
+    );
     saveStaticState(state);
     window.dispatchEvent(
       new CustomEvent('maktabyar:static-sync', {
         detail: filterTeacherSnapshot(state, stu.teacherId),
       })
     );
-    return jsonResponse({ student: stu });
+    return jsonResponse({
+      student: stu,
+      createdSessions,
+      studentSessions,
+    });
   }
 
   if (studentPatchMatch && method === 'DELETE') {
@@ -718,6 +718,7 @@ async function handleStaticApiRequest(
     stu.sessionsLeft += added;
     stu.totalSessionsPaid += added;
     stu.updatedAt = nowIso;
+    const createdSessions = syncStudentScheduledSessions(stu, state.sessions);
     const rechargeRecord: RechargeRequest = {
       id: `req_direct_${Date.now()}`,
       studentId: stu.id,
@@ -738,7 +739,7 @@ async function handleStaticApiRequest(
         detail: filterTeacherSnapshot(state, stu.teacherId),
       })
     );
-    return jsonResponse({ student: stu, rechargeRecord });
+    return jsonResponse({ student: stu, rechargeRecord, createdSessions });
   }
 
   // 6. Sessions Create & Update
@@ -907,10 +908,12 @@ async function handleStaticApiRequest(
     reqItem.status = bodyObj.status === 'approved' ? 'approved' : 'rejected';
     reqItem.updatedAt = nowIso;
     const stu = state.students.find((s) => s.id === reqItem.studentId);
+    let createdSessions: ClassSession[] = [];
     if (stu && reqItem.status === 'approved') {
       stu.sessionsLeft += reqItem.requestedSessions;
       stu.totalSessionsPaid += reqItem.requestedSessions;
       stu.updatedAt = nowIso;
+      createdSessions = syncStudentScheduledSessions(stu, state.sessions);
     }
     saveStaticState(state);
     window.dispatchEvent(
@@ -918,7 +921,11 @@ async function handleStaticApiRequest(
         detail: filterTeacherSnapshot(state, reqItem.teacherId),
       })
     );
-    return jsonResponse({ rechargeRequest: reqItem, student: stu });
+    return jsonResponse({
+      rechargeRequest: reqItem,
+      student: stu,
+      createdSessions,
+    });
   }
 
   // 8. Messages & Reminders

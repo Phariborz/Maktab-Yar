@@ -21,6 +21,8 @@ import {
   sanitizePostpaidCycleType,
   calculatePostpaidCycleSessions,
   formatPostpaidCycleLabel,
+  syncStudentScheduledSessions,
+  syncAllStudentsScheduledSessions,
 } from './src/utils/jalali.ts';
 import type {
   Student,
@@ -840,6 +842,13 @@ function loadState(): ServerStateSnapshot {
           needsSave = true;
         }
 
+        // Automatically generate any missing multi-month scheduled sessions for all students
+        // (e.g., a student who paid for 14 sessions starting in Mehr so their sessions extend through Aban)
+        const syncedNewSessions = syncAllStudentsScheduledSessions(parsed);
+        if (syncedNewSessions.length > 0) {
+          needsSave = true;
+        }
+
         if (needsSave) {
           saveState(parsed);
         }
@@ -850,6 +859,7 @@ function loadState(): ServerStateSnapshot {
     console.error('Failed to read server-data.json, re-seeding:', err);
   }
   const initial = buildInitialSeedState();
+  syncAllStudentsScheduledSessions(initial);
   saveState(initial);
   return initial;
 }
@@ -1576,45 +1586,11 @@ async function startServer() {
       activeTeacher.id
     );
 
-    const targetGenCount =
-      initialSessionsLeft > 0
-        ? initialSessionsLeft
-        : paymentType === 'postpaid'
-        ? postpaidCycleSessions
-        : 3;
-    const sessionsToGenerate = Math.min(Math.max(targetGenCount, 2), 8);
-    const scheduledDates = generateSessionDatesByWeekdays(
-      cleanStart,
-      cleanSelectedDays,
-      sessionsToGenerate
+    const createdSessions = syncStudentScheduledSessions(
+      newStudent,
+      state.sessions
     );
-    const createdSessions: ClassSession[] = [];
-
-    scheduledDates.forEach((sessionDate, i) => {
-      const resolvedTime = getTimeForJalaliDate(
-        sessionDate,
-        cleanSelectedDays,
-        primaryTime,
-        cleanDayTimes
-      );
-      const sess: ClassSession = {
-        id: `sess_${Date.now()}_${i}`,
-        studentId: newStudent.id,
-        studentName: newStudent.name,
-        studentPhone: newStudent.phone,
-        subject: newStudent.subject,
-        jalaliDate: sessionDate,
-        time: resolvedTime,
-        attendanceStatus: 'scheduled',
-        grade: -1,
-        topic: `جلسه ${toPersianDigits(i + 1)} — ${newStudent.subject}`,
-        teacherNote: '',
-        teacherId: activeTeacher.id,
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      };
-      state.sessions.push(sess);
-      createdSessions.push(sess);
+    createdSessions.forEach((sess) => {
       broadcastScoped(
         { type: 'session:created', payload: sess },
         newStudent.id,
@@ -1843,6 +1819,25 @@ async function startServer() {
       }
     }
 
+    // Synchronize multi-month scheduled sessions on the calendar if balance, paid sessions, weekdays, or startDate changed
+    const shouldRescheduleUnheld =
+      rawSelectedDays !== undefined || startDate !== undefined;
+    const createdSessions = syncStudentScheduledSessions(
+      student,
+      state.sessions,
+      { rescheduleUnheld: shouldRescheduleUnheld }
+    );
+    createdSessions.forEach((sess) => {
+      broadcastScoped(
+        { type: 'session:created', payload: sess },
+        student.id,
+        student.teacherId
+      );
+    });
+    const studentSessions = state.sessions.filter(
+      (s) => s.studentId === student.id
+    );
+
     saveState(state);
     broadcastScoped(
       { type: 'student:updated', payload: student },
@@ -1850,7 +1845,7 @@ async function startServer() {
       student.teacherId
     );
 
-    res.json({ student });
+    res.json({ student, createdSessions, studentSessions });
   });
 
   app.post('/api/students/:id/recharge', requireTeacherAuth, (req, res) => {
@@ -1864,7 +1859,7 @@ async function startServer() {
       return;
     }
 
-    const addedSessions = Math.max(1, Math.min(100, Number(req.body?.addedSessions) || 1));
+    const addedSessions = Math.max(1, Math.min(200, Number(req.body?.addedSessions) || 1));
     const customTuition =
       req.body?.tuitionPerSession !== undefined
         ? Math.max(0, Number(req.body.tuitionPerSession))
@@ -1879,6 +1874,19 @@ async function startServer() {
     student.sessionsLeft = previousBalance + addedSessions;
     student.totalSessionsPaid += addedSessions;
     student.updatedAt = nowIso;
+
+    // Automatically extend scheduled sessions on the calendar across all months for the new balance
+    const createdSessions = syncStudentScheduledSessions(
+      student,
+      state.sessions
+    );
+    createdSessions.forEach((sess) => {
+      broadcastScoped(
+        { type: 'session:created', payload: sess },
+        student.id,
+        student.teacherId
+      );
+    });
 
     const rechargeRecord: RechargeRequest = {
       id: `req_direct_${Date.now()}`,
@@ -1932,7 +1940,7 @@ async function startServer() {
       student.teacherId
     );
 
-    res.json({ student, rechargeRecord, notification: notif });
+    res.json({ student, rechargeRecord, createdSessions, notification: notif });
   });
 
   app.delete('/api/students/:id', requireTeacherAuth, (req, res) => {
@@ -2268,11 +2276,20 @@ async function startServer() {
 
     const student = state.students.find((s) => s.id === requestItem.studentId);
     let previousBalance = 0;
+    let createdSessions: ClassSession[] = [];
     if (student && decision === 'approved') {
       previousBalance = student.sessionsLeft;
       student.sessionsLeft = previousBalance + requestItem.requestedSessions;
       student.totalSessionsPaid += requestItem.requestedSessions;
       student.updatedAt = nowIso;
+      createdSessions = syncStudentScheduledSessions(student, state.sessions);
+      createdSessions.forEach((sess) => {
+        broadcastScoped(
+          { type: 'session:created', payload: sess },
+          student.id,
+          student.teacherId
+        );
+      });
       broadcastScoped(
         { type: 'student:updated', payload: student },
         student.id,
@@ -2318,7 +2335,12 @@ async function startServer() {
       requestItem.teacherId
     );
 
-    res.json({ rechargeRequest: requestItem, student, notification: studentNotif });
+    res.json({
+      rechargeRequest: requestItem,
+      student,
+      createdSessions,
+      notification: studentNotif,
+    });
   });
 
   app.post('/api/notifications/reminder', requireTeacherAuth, (req, res) => {

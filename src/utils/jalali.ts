@@ -1,6 +1,7 @@
 /**
  * Iranian Jalali (Shamsi) Calendar & Persian Number Formatting Utilities
  */
+import type { Student, ClassSession, ServerStateSnapshot } from '../types';
 
 export const JALALI_MONTH_NAMES = [
   'فروردین',
@@ -590,6 +591,7 @@ export function formatPostpaidCycleLabel(
 /**
  * Generates upcoming Jalali dates starting on or after `startDateJalali`
  * that fall on any of the teacher's selected weekdays (`0..6`).
+ * Supports multi-month courses (up to 200 sessions across 3 years).
  */
 export function generateSessionDatesByWeekdays(
   startDateJalali: string,
@@ -597,11 +599,11 @@ export function generateSessionDatesByWeekdays(
   count: number
 ): string[] {
   const cleanDays = sanitizeSelectedDays(selectedDays);
-  const targetCount = Math.max(1, Math.min(30, count));
+  const targetCount = Math.max(1, Math.min(200, count));
   const results: string[] = [];
   let offset = 0;
 
-  while (results.length < targetCount && offset < 365) {
+  while (results.length < targetCount && offset < 1095) {
     const candidate = addJalaliDays(startDateJalali, offset);
     const [jy, jm, jd] = parseJalaliString(candidate);
     const dow = getJalaliDayOfWeek(jy, jm, jd);
@@ -613,3 +615,163 @@ export function generateSessionDatesByWeekdays(
 
   return results;
 }
+
+/**
+ * Ensures that a student's paid / cycle sessions are fully populated as `'scheduled'`
+ * sessions on the Jalali calendar across all months (e.g., 14 sessions starting in
+ * Mehr extending all the way through the end of Aban).
+ *
+ * Returns the array of newly created `ClassSession` records (and appends them to `stateSessions`).
+ */
+export function syncStudentScheduledSessions(
+  student: Student,
+  stateSessions: ClassSession[],
+  options?: {
+    rescheduleUnheld?: boolean;
+  }
+): ClassSession[] {
+  const cleanDays = sanitizeSelectedDays(student.selectedDays);
+  const cleanStart =
+    toEnglishDigits(student.startDate || '').trim() ||
+    getCurrentJalaliDate().formatted;
+  const cleanDayTimes = sanitizeDayTimes(
+    student.dayTimes,
+    cleanDays,
+    student.classTime || '17:00'
+  );
+  const primaryTime =
+    cleanDayTimes[String(cleanDays[0])] || student.classTime || '17:00';
+
+  if (options?.rescheduleUnheld) {
+    // Remove unheld ('scheduled') sessions for this student so they can be cleanly regenerated
+    // on the updated startDate / selectedDays
+    for (let i = stateSessions.length - 1; i >= 0; i--) {
+      if (
+        stateSessions[i].studentId === student.id &&
+        stateSessions[i].attendanceStatus === 'scheduled'
+      ) {
+        stateSessions.splice(i, 1);
+      }
+    }
+  }
+
+  const studentSessions = stateSessions
+    .filter((s) => s.studentId === student.id)
+    .sort((a, b) => a.jalaliDate.localeCompare(b.jalaliDate));
+
+  const existingScheduled = studentSessions.filter(
+    (s) => s.attendanceStatus === 'scheduled'
+  );
+  const consumedCount = studentSessions.filter(
+    (s) =>
+      s.attendanceStatus === 'present' ||
+      s.attendanceStatus === 'absent_charged'
+  ).length;
+
+  const paidRemainingByLedger =
+    (student.totalSessionsPaid || 0) -
+    Math.max(student.totalAttended || 0, consumedCount);
+  const effectivePaidRemaining = Math.max(
+    student.sessionsLeft,
+    paidRemainingByLedger
+  );
+
+  let targetScheduledCount: number;
+  if (effectivePaidRemaining > 0) {
+    // Generate ALL paid remaining sessions (e.g. 14 sessions across Mehr and Aban)
+    targetScheduledCount = Math.min(200, effectivePaidRemaining);
+  } else if (student.paymentType === 'postpaid') {
+    const cycleLen =
+      student.postpaidCycleSessions ||
+      calculatePostpaidCycleSessions(
+        student.postpaidCycleType,
+        cleanDays,
+        cleanStart
+      );
+    const unsettledInCycle =
+      student.sessionsLeft < 0 ? Math.abs(student.sessionsLeft) % cycleLen : 0;
+    targetScheduledCount = Math.max(1, cycleLen - unsettledInCycle);
+  } else {
+    // Keep at least 1 upcoming scheduled session when balance is 0 or negative so teacher can mark attendance
+    targetScheduledCount = Math.max(1, existingScheduled.length);
+  }
+
+  const missingCount = targetScheduledCount - existingScheduled.length;
+  if (missingCount <= 0) {
+    return [];
+  }
+
+  // Determine the starting date for generating the missing scheduled sessions
+  const existingDatesSet = new Set(studentSessions.map((s) => s.jalaliDate));
+  let searchStartDate = cleanStart;
+  if (studentSessions.length > 0) {
+    const lastDate = studentSessions[studentSessions.length - 1].jalaliDate;
+    const dayAfterLast = addJalaliDays(lastDate, 1);
+    searchStartDate =
+      dayAfterLast.localeCompare(cleanStart) >= 0 ? dayAfterLast : cleanStart;
+  }
+
+  // Generate candidate dates on the student's selected weekdays
+  const candidateDates = generateSessionDatesByWeekdays(
+    searchStartDate,
+    cleanDays,
+    missingCount + existingDatesSet.size
+  ).filter((d) => !existingDatesSet.has(d));
+
+  const datesToCreate = candidateDates.slice(0, missingCount);
+  const nowIso = new Date().toISOString();
+  const baseCount = studentSessions.length;
+  const newlyCreated: ClassSession[] = [];
+
+  datesToCreate.forEach((sessionDate, idx) => {
+    const sessionNumber = baseCount + idx + 1;
+    const resolvedTime = getTimeForJalaliDate(
+      sessionDate,
+      cleanDays,
+      primaryTime,
+      cleanDayTimes
+    );
+    const newSess: ClassSession = {
+      id: `sess_${student.id}_${sessionDate.replace(/\//g, '')}_${Date.now()}_${idx}`,
+      studentId: student.id,
+      studentName: student.name,
+      studentPhone: student.phone,
+      subject: student.subject,
+      jalaliDate: sessionDate,
+      time: resolvedTime,
+      attendanceStatus: 'scheduled',
+      grade: -1,
+      topic: `جلسه ${toPersianDigits(sessionNumber)} — ${student.subject}`,
+      teacherNote: '',
+      teacherId: student.teacherId,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+    stateSessions.push(newSess);
+    newlyCreated.push(newSess);
+  });
+
+  return newlyCreated;
+}
+
+/**
+ * Scans all students in a state snapshot and generates any missing `'scheduled'`
+ * sessions on the calendar so multi-month courses (such as 14-session packages)
+ * always extend through all months.
+ */
+export function syncAllStudentsScheduledSessions(
+  state: ServerStateSnapshot
+): ClassSession[] {
+  if (!state || !Array.isArray(state.students) || !Array.isArray(state.sessions)) {
+    return [];
+  }
+  const allCreated: ClassSession[] = [];
+  for (const stu of state.students) {
+    const created = syncStudentScheduledSessions(stu, state.sessions);
+    if (created.length > 0) {
+      allCreated.push(...created);
+    }
+  }
+  return allCreated;
+}
+
